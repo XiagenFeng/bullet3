@@ -56,7 +56,11 @@
 
 
 #else //_WIN32
+#ifdef __psp2__
+#include <time.h>
+#else
 #include <sys/time.h>
+#endif
 
 #ifdef BT_LINUX_REALTIME
 //required linking against rt (librt)
@@ -75,6 +79,9 @@ struct btClockData
 	LONGLONG mStartTick;
 	LARGE_INTEGER mStartTime;
 #else
+#ifdef __psp2__
+	time_t mStartTime;
+#else
 #ifdef __CELLOS_LV2__
 	uint64_t	mStartTime;
 #else
@@ -82,6 +89,7 @@ struct btClockData
     uint64_t mStartTimeNano;
 #endif
 	struct timeval mStartTime;
+#endif
 #endif
 #endif //__CELLOS_LV2__
 
@@ -122,6 +130,9 @@ void btClock::reset()
 	QueryPerformanceCounter(&m_data->mStartTime);
 	m_data->mStartTick = GetTickCount64();
 #else
+#ifdef __psp2__
+	time(&m_data->mStartTime); 
+#else
 #ifdef __CELLOS_LV2__
 
 	typedef uint64_t  ClockSize;
@@ -134,6 +145,7 @@ void btClock::reset()
     m_data->mStartTimeNano = mach_absolute_time();
 #endif
 	gettimeofday(&m_data->mStartTime, 0);
+#endif
 #endif
 #endif
 }
@@ -154,6 +166,11 @@ unsigned long long int btClock::getTimeMilliseconds()
 		return msecTicks;
 #else
 
+#ifdef __psp2__
+	time_t currentTime;
+	time(&currentTime);
+	return (unsigned long int)(difftime(currentTime, m_data->mStartTime) * 1e3);
+#else
 #ifdef __CELLOS_LV2__
 		uint64_t freq=sys_time_get_timebase_frequency();
 		double dFreq=((double) freq) / 1000.0;
@@ -170,6 +187,7 @@ unsigned long long int btClock::getTimeMilliseconds()
 		return (currentTime.tv_sec - m_data->mStartTime.tv_sec) * 1000 +
 			(currentTime.tv_usec - m_data->mStartTime.tv_usec) / 1000;
 #endif //__CELLOS_LV2__
+#endif
 #endif
 }
 
@@ -190,6 +208,11 @@ unsigned long long int btClock::getTimeMicroseconds()
 		return (unsigned long long) elapsedTime.QuadPart;
 #else
 
+#ifdef __psp2__
+	time_t currentTime;
+	time(&currentTime);
+	return (unsigned long int)(difftime(currentTime, m_data->mStartTime) * 1e6);
+#else
 #ifdef __CELLOS_LV2__
 		uint64_t freq=sys_time_get_timebase_frequency();
 		double dFreq=((double) freq)/ 1000000.0;
@@ -206,6 +229,7 @@ unsigned long long int btClock::getTimeMicroseconds()
 		return (currentTime.tv_sec - m_data->mStartTime.tv_sec) * 1000000 +
 			(currentTime.tv_usec - m_data->mStartTime.tv_usec);
 #endif//__CELLOS_LV2__
+#endif
 #endif
 }
 
@@ -224,6 +248,11 @@ unsigned long long int btClock::getTimeNanoseconds()
 		return (unsigned long long) elapsedTime.QuadPart;
 #else
 
+#ifdef __psp2__
+	time_t currentTime;
+	time(&currentTime);
+	return (unsigned long int)(difftime(currentTime, m_data->mStartTime) * 1e9);
+#else
 #ifdef __CELLOS_LV2__
 		uint64_t freq=sys_time_get_timebase_frequency();
 		double dFreq=((double) freq)/ 1e9;
@@ -268,6 +297,7 @@ unsigned long long int btClock::getTimeNanoseconds()
 #endif//__APPLE__
 #endif//__CELLOS_LV2__
 #endif 
+#endif
 }
 
 
