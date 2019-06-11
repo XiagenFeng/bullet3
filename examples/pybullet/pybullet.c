@@ -10,6 +10,10 @@
 #include "../SharedMemory/dart/DARTPhysicsC_API.h"
 #endif
 
+#ifdef BT_ENABLE_PHYSX
+#include "../SharedMemory/physx/PhysXC_API.h"
+#endif
+
 #ifdef BT_ENABLE_MUJOCO
 #include "../SharedMemory/mujoco/MuJoCoPhysicsC_API.h"
 #endif
@@ -180,6 +184,34 @@ static int pybullet_internalSetVector(PyObject* objVec, float vector[3])
 	return 0;
 }
 
+//  vector - double[2] which will be set by values from obVec
+static int pybullet_internalSetVector2d(PyObject* obVec, double vector[2])
+{
+	int i, len;
+	PyObject* seq;
+	if (obVec == NULL)
+		return 0;
+
+	seq = PySequence_Fast(obVec, "expected a sequence");
+	if (seq)
+	{
+		len = PySequence_Size(obVec);
+		assert(len == 2);
+		if (len == 2)
+		{
+			for (i = 0; i < len; i++)
+			{
+				vector[i] = pybullet_internalGetFloatFromSequence(seq, i);
+			}
+			Py_DECREF(seq);
+			return 1;
+		}
+		Py_DECREF(seq);
+	}
+	PyErr_Clear();
+	return 0;
+}
+
 //  vector - double[3] which will be set by values from obVec
 static int pybullet_internalSetVectord(PyObject* obVec, double vector[3])
 {
@@ -298,6 +330,29 @@ static PyObject* pybullet_stepSimulation(PyObject* self, PyObject* args, PyObjec
 			statusHandle = b3SubmitClientCommandAndWaitStatus(
 				sm, b3InitStepSimulationCommand(sm));
 			statusType = b3GetStatusType(statusHandle);
+
+			if (statusType == CMD_STEP_FORWARD_SIMULATION_COMPLETED)
+			{
+				struct b3ForwardDynamicsAnalyticsArgs analyticsData;
+				int numIslands = 0;
+				int i;
+				PyObject* pyAnalyticsData = PyTuple_New(numIslands);
+
+				numIslands = b3GetStatusForwardDynamicsAnalyticsData(statusHandle, &analyticsData);
+
+				for (i=0;i<numIslands;i++)
+				{
+					int numFields = 4;
+					PyObject* pyIslandData = PyTuple_New(numFields);
+					PyTuple_SetItem(pyIslandData, 0, PyLong_FromLong(analyticsData.m_islandData[i].m_islandId));
+					PyTuple_SetItem(pyIslandData, 1, PyLong_FromLong(analyticsData.m_islandData[i].m_numBodies));
+					PyTuple_SetItem(pyIslandData, 2, PyLong_FromLong(analyticsData.m_islandData[i].m_numIterationsUsed));
+					PyTuple_SetItem(pyIslandData, 3, PyFloat_FromDouble(analyticsData.m_islandData[i].m_remainingLeastSquaresResidual));
+					PyTuple_SetItem(pyAnalyticsData, i, pyIslandData);
+				}
+
+				return pyAnalyticsData;
+			}
 		}
 	}
 
@@ -417,6 +472,13 @@ static PyObject* pybullet_connectPhysicsServer(PyObject* self, PyObject* args, P
 			case eCONNECT_DART:
 			{
 				sm = b3ConnectPhysicsDART();
+				break;
+			}
+#endif
+#ifdef BT_ENABLE_PHYSX
+			case eCONNECT_PHYSX:
+			{
+				sm = b3ConnectPhysX(argc, argv);
 				break;
 			}
 #endif
@@ -1121,6 +1183,40 @@ static PyObject* pybullet_saveState(PyObject* self, PyObject* args, PyObject* ke
 	return PyInt_FromLong(stateId);
 }
 
+static PyObject* pybullet_removeState(PyObject* self, PyObject* args, PyObject* keywds)
+{
+	{
+		int stateUniqueId = -1;
+		b3PhysicsClientHandle sm = 0;
+
+		int physicsClientId = 0;
+		static char* kwlist[] = { "stateUniqueId", "physicsClientId", NULL };
+		if (!PyArg_ParseTupleAndKeywords(args, keywds, "i|i", kwlist, &stateUniqueId, &physicsClientId))
+		{
+			return NULL;
+		}
+		sm = getPhysicsClient(physicsClientId);
+		if (sm == 0)
+		{
+			PyErr_SetString(SpamError, "Not connected to physics server.");
+			return NULL;
+		}
+		if (stateUniqueId >= 0)
+		{
+			b3SharedMemoryStatusHandle statusHandle;
+			int statusType;
+			if (b3CanSubmitCommand(sm))
+			{
+				statusHandle = b3SubmitClientCommandAndWaitStatus(sm, b3InitRemoveStateCommand(sm, stateUniqueId));
+				statusType = b3GetStatusType(statusHandle);
+			}
+		}
+	}
+
+	Py_INCREF(Py_None);
+	return Py_None;
+}
+
 static PyObject* pybullet_loadMJCF(PyObject* self, PyObject* args, PyObject* keywds)
 {
 	const char* mjcfFileName = "";
@@ -1193,20 +1289,23 @@ static PyObject* pybullet_changeDynamicsInfo(PyObject* self, PyObject* args, PyO
 	double restitution = -1;
 	double linearDamping = -1;
 	double angularDamping = -1;
+
 	double contactStiffness = -1;
 	double contactDamping = -1;
 	double ccdSweptSphereRadius = -1;
 	int frictionAnchor = -1;
 	double contactProcessingThreshold = -1;
 	int activationState = -1;
-
+	double jointDamping = -1;
 	PyObject* localInertiaDiagonalObj = 0;
-
+	PyObject* anisotropicFrictionObj = 0;
+	double maxJointVelocity = -1;
+	
 	b3PhysicsClientHandle sm = 0;
 
 	int physicsClientId = 0;
-	static char* kwlist[] = {"bodyUniqueId", "linkIndex", "mass", "lateralFriction", "spinningFriction", "rollingFriction", "restitution", "linearDamping", "angularDamping", "contactStiffness", "contactDamping", "frictionAnchor", "localInertiaDiagonal", "ccdSweptSphereRadius", "contactProcessingThreshold", "activationState", "physicsClientId", NULL};
-	if (!PyArg_ParseTupleAndKeywords(args, keywds, "ii|dddddddddiOddii", kwlist, &bodyUniqueId, &linkIndex, &mass, &lateralFriction, &spinningFriction, &rollingFriction, &restitution, &linearDamping, &angularDamping, &contactStiffness, &contactDamping, &frictionAnchor, &localInertiaDiagonalObj, &ccdSweptSphereRadius, &contactProcessingThreshold, &activationState, &physicsClientId))
+	static char* kwlist[] = {"bodyUniqueId", "linkIndex", "mass", "lateralFriction", "spinningFriction", "rollingFriction", "restitution", "linearDamping", "angularDamping", "contactStiffness", "contactDamping", "frictionAnchor", "localInertiaDiagonal", "ccdSweptSphereRadius", "contactProcessingThreshold", "activationState", "jointDamping", "anisotropicFriction", "maxJointVelocity",  "physicsClientId", NULL};
+	if (!PyArg_ParseTupleAndKeywords(args, keywds, "ii|dddddddddiOddidOdi", kwlist, &bodyUniqueId, &linkIndex, &mass, &lateralFriction, &spinningFriction, &rollingFriction, &restitution, &linearDamping, &angularDamping, &contactStiffness, &contactDamping, &frictionAnchor, &localInertiaDiagonalObj, &ccdSweptSphereRadius, &contactProcessingThreshold, &activationState, &jointDamping, &anisotropicFrictionObj, &maxJointVelocity, &physicsClientId))
 	{
 		return NULL;
 	}
@@ -1231,6 +1330,12 @@ static PyObject* pybullet_changeDynamicsInfo(PyObject* self, PyObject* args, PyO
 		if (mass >= 0)
 		{
 			b3ChangeDynamicsInfoSetMass(command, bodyUniqueId, linkIndex, mass);
+		}
+		if (anisotropicFrictionObj)
+		{
+			double anisotropicFriction[3];
+			pybullet_internalSetVectord(anisotropicFrictionObj, anisotropicFriction);
+			b3ChangeDynamicsInfoSetAnisotropicFriction(command, bodyUniqueId, linkIndex, anisotropicFriction);
 		}
 		if (localInertiaDiagonalObj)
 		{
@@ -1260,6 +1365,10 @@ static PyObject* pybullet_changeDynamicsInfo(PyObject* self, PyObject* args, PyO
 			b3ChangeDynamicsInfoSetAngularDamping(command, bodyUniqueId, angularDamping);
 		}
 
+		if (jointDamping >= 0)
+		{
+			b3ChangeDynamicsInfoSetJointDamping(command, bodyUniqueId, linkIndex, jointDamping);
+		}
 		if (restitution >= 0)
 		{
 			b3ChangeDynamicsInfoSetRestitution(command, bodyUniqueId, linkIndex, restitution);
@@ -1284,6 +1393,11 @@ static PyObject* pybullet_changeDynamicsInfo(PyObject* self, PyObject* args, PyO
 		{
 			b3ChangeDynamicsInfoSetContactProcessingThreshold(command, bodyUniqueId, linkIndex, contactProcessingThreshold);
 		}
+		if (maxJointVelocity >= 0)
+		{
+			b3ChangeDynamicsInfoSetMaxJointVelocity(command, bodyUniqueId, maxJointVelocity);
+		}
+				
 		statusHandle = b3SubmitClientCommandAndWaitStatus(sm, command);
 	}
 
@@ -1454,12 +1568,38 @@ static PyObject* pybullet_setPhysicsEngineParameter(PyObject* self, PyObject* ar
 	double globalCFM = -1;
 
 	int minimumSolverIslandSize = -1;
-
+	int reportSolverAnalytics = -1;
 	int physicsClientId = 0;
-	static char* kwlist[] = {"fixedTimeStep", "numSolverIterations", "useSplitImpulse", "splitImpulsePenetrationThreshold", "numSubSteps", "collisionFilterMode", "contactBreakingThreshold", "maxNumCmdPer1ms", "enableFileCaching", "restitutionVelocityThreshold", "erp", "contactERP", "frictionERP", "enableConeFriction", "deterministicOverlappingPairs", "allowedCcdPenetration", "jointFeedbackMode", "solverResidualThreshold", "contactSlop", "enableSAT", "constraintSolverType", "globalCFM", "minimumSolverIslandSize", "physicsClientId", NULL};
 
-	if (!PyArg_ParseTupleAndKeywords(args, keywds, "|diidiidiiddddiididdiiddi", kwlist, &fixedTimeStep, &numSolverIterations, &useSplitImpulse, &splitImpulsePenetrationThreshold, &numSubSteps,
-									 &collisionFilterMode, &contactBreakingThreshold, &maxNumCmdPer1ms, &enableFileCaching, &restitutionVelocityThreshold, &erp, &contactERP, &frictionERP, &enableConeFriction, &deterministicOverlappingPairs, &allowedCcdPenetration, &jointFeedbackMode, &solverResidualThreshold, &contactSlop, &enableSAT, &constraintSolverType, &globalCFM, &minimumSolverIslandSize, &physicsClientId))
+	static char* kwlist[] = {"fixedTimeStep",
+							 "numSolverIterations",
+							 "useSplitImpulse",
+							 "splitImpulsePenetrationThreshold",
+							 "numSubSteps",
+							 "collisionFilterMode",
+							 "contactBreakingThreshold",
+							 "maxNumCmdPer1ms",
+							 "enableFileCaching",
+							 "restitutionVelocityThreshold",
+							 "erp",
+							 "contactERP",
+							 "frictionERP",
+							 "enableConeFriction",
+							 "deterministicOverlappingPairs",
+							 "allowedCcdPenetration",
+							 "jointFeedbackMode",
+							 "solverResidualThreshold",
+							 "contactSlop",
+							 "enableSAT",
+							 "constraintSolverType",
+							 "globalCFM",
+							 "minimumSolverIslandSize",
+							 "reportSolverAnalytics",
+							 "physicsClientId", NULL};
+
+	if (!PyArg_ParseTupleAndKeywords(args, keywds, "|diidiidiiddddiididdiidiii", kwlist, &fixedTimeStep, &numSolverIterations, &useSplitImpulse, &splitImpulsePenetrationThreshold, &numSubSteps,
+									 &collisionFilterMode, &contactBreakingThreshold, &maxNumCmdPer1ms, &enableFileCaching, &restitutionVelocityThreshold, &erp, &contactERP, &frictionERP, &enableConeFriction, &deterministicOverlappingPairs, &allowedCcdPenetration, &jointFeedbackMode, &solverResidualThreshold, &contactSlop, &enableSAT, &constraintSolverType, &globalCFM, &minimumSolverIslandSize, 
+									&reportSolverAnalytics, &physicsClientId))
 	{
 		return NULL;
 	}
@@ -1575,6 +1715,10 @@ static PyObject* pybullet_setPhysicsEngineParameter(PyObject* self, PyObject* ar
 		if (globalCFM >= 0)
 		{
 			b3PhysicsParamSetDefaultGlobalCFM(command, globalCFM);
+		}
+		if (reportSolverAnalytics >= 0)
+		{
+			b3PhysicsParamSetSolverAnalytics(command, reportSolverAnalytics);
 		}
 		statusHandle = b3SubmitClientCommandAndWaitStatus(sm, command);
 	}
@@ -1799,7 +1943,7 @@ static PyObject* pybullet_loadSoftBody(PyObject* self, PyObject* args, PyObject*
 	int physicsClientId = 0;
 	int flags = 0;
 
-	static char* kwlist[] = {"fileName", "scale", "mass", "collisionMargin", "physicsClientId", NULL};
+	static char* kwlist[] = {"fileName", "basePosition", "baseOrientation", "scale", "mass", "collisionMargin", "physicsClientId", NULL};
 
 	int bodyUniqueId = -1;
 	const char* fileName = "";
@@ -1809,9 +1953,35 @@ static PyObject* pybullet_loadSoftBody(PyObject* self, PyObject* args, PyObject*
 
 	b3PhysicsClientHandle sm = 0;
 
-	if (!PyArg_ParseTupleAndKeywords(args, keywds, "s|dddi", kwlist, &fileName, &scale, &mass, &collisionMargin, &physicsClientId))
+	double startPos[3] = {0.0, 0.0, 0.0};
+	double startOrn[4] = {0.0, 0.0, 0.0, 1.0};
+
+
+	PyObject* basePosObj = 0;
+	PyObject* baseOrnObj = 0;
+
+	if (!PyArg_ParseTupleAndKeywords(args, keywds, "s|OOdddi", kwlist, &fileName, &basePosObj, &baseOrnObj, &scale, &mass, &collisionMargin, &physicsClientId))
 	{
 		return NULL;
+	}
+	else
+	{
+		if (basePosObj)
+		{
+			if (!pybullet_internalSetVectord(basePosObj, startPos))
+			{
+				PyErr_SetString(SpamError, "Cannot convert basePosition.");
+				return NULL;
+			}
+		}
+		if (baseOrnObj)
+		{
+			if (!pybullet_internalSetVector4d(baseOrnObj, startOrn))
+			{
+				PyErr_SetString(SpamError, "Cannot convert baseOrientation.");
+				return NULL;
+			}
+		}
 	}
 
 	sm = getPhysicsClient(physicsClientId);
@@ -1827,6 +1997,9 @@ static PyObject* pybullet_loadSoftBody(PyObject* self, PyObject* args, PyObject*
 		int statusType;
 		b3SharedMemoryCommandHandle command =
 			b3LoadSoftBodyCommandInit(sm, fileName);
+
+		b3LoadSoftBodySetStartPosition(command, startPos[0], startPos[1], startPos[2]);
+		b3LoadSoftBodySetStartOrientation(command, startOrn[0], startOrn[1], startOrn[2], startOrn[3]);
 
 		if (scale > 0)
 		{
@@ -2141,7 +2314,7 @@ static PyObject* pybullet_setJointMotorControlArray(PyObject* self, PyObject* ar
 
 		if ((controlMode != CONTROL_MODE_VELOCITY) &&
 			(controlMode != CONTROL_MODE_TORQUE) &&
-			(controlMode != CONTROL_MODE_POSITION_VELOCITY_PD)&&
+			(controlMode != CONTROL_MODE_POSITION_VELOCITY_PD) &&
 			(controlMode != CONTROL_MODE_PD))
 		{
 			PyErr_SetString(SpamError, "Illegal control mode.");
@@ -2388,28 +2561,29 @@ static PyObject* pybullet_setJointMotorControlArray(PyObject* self, PyObject* ar
 	//  return NULL;
 }
 
-
 static PyObject* pybullet_setJointMotorControlMultiDof(PyObject* self, PyObject* args, PyObject* keywds)
 {
 	int bodyUniqueId, jointIndex, controlMode;
 
-	double targetPositionArray[4] = { 0, 0, 0, 1 };
-	double targetVelocityArray[3] = { 0, 0, 0 };
+	double targetPositionArray[4] = {0, 0, 0, 1};
+	double targetVelocityArray[3] = {0, 0, 0};
+	double targetForceArray[3] = {100000.0, 100000.0, 100000.0};
 	int targetPositionSize = 0;
 	int targetVelocitySize = 0;
+	int targetForceSize = 0;
 	PyObject* targetPositionObj = 0;
 	PyObject* targetVelocityObj = 0;
+	PyObject* targetForceObj = 0;
 
-	double force = 100000.0;
 	double kp = 0.1;
 	double kd = 1.0;
 	double maxVelocity = -1;
 	b3PhysicsClientHandle sm = 0;
 
 	int physicsClientId = 0;
-	static char* kwlist[] = { "bodyUniqueId", "jointIndex", "controlMode", "targetPosition", "targetVelocity", "force", "positionGain", "velocityGain", "maxVelocity", "physicsClientId", NULL };
-	if (!PyArg_ParseTupleAndKeywords(args, keywds, "iii|OOddddi", kwlist, &bodyUniqueId, &jointIndex, &controlMode,
-		&targetPositionObj, &targetVelocityObj, &force, &kp, &kd, &maxVelocity, &physicsClientId))
+	static char* kwlist[] = {"bodyUniqueId", "jointIndex", "controlMode", "targetPosition", "targetVelocity", "force", "positionGain", "velocityGain", "maxVelocity", "physicsClientId", NULL};
+	if (!PyArg_ParseTupleAndKeywords(args, keywds, "iii|OOOdddi", kwlist, &bodyUniqueId, &jointIndex, &controlMode,
+									 &targetPositionObj, &targetVelocityObj, &targetForceObj, &kp, &kd, &maxVelocity, &physicsClientId))
 	{
 		return NULL;
 	}
@@ -2431,13 +2605,17 @@ static PyObject* pybullet_setJointMotorControlMultiDof(PyObject* self, PyObject*
 		{
 			targetPositionSize = 0;
 		}
-		if (targetPositionSize >4)
+		if (targetPositionSize > 4)
 		{
 			targetPositionSize = 4;
 		}
-		for (i = 0; i < targetPositionSize; i++)
+		if (targetPositionSeq)
 		{
-			targetPositionArray[i] = pybullet_internalGetFloatFromSequence(targetPositionSeq, i);
+			for (i = 0; i < targetPositionSize; i++)
+			{
+				targetPositionArray[i] = pybullet_internalGetFloatFromSequence(targetPositionSeq, i);
+			}
+			Py_DECREF(targetPositionSeq);
 		}
 	}
 
@@ -2452,15 +2630,43 @@ static PyObject* pybullet_setJointMotorControlMultiDof(PyObject* self, PyObject*
 		{
 			targetVelocitySize = 0;
 		}
-		if (targetVelocitySize >3)
+		if (targetVelocitySize > 3)
 		{
 			targetVelocitySize = 3;
 		}
-		for (i = 0; i < targetVelocitySize; i++)
+		if (targetVelocitySeq)
 		{
-			targetVelocityArray[i] = pybullet_internalGetFloatFromSequence(targetVelocitySeq, i);
+			for (i = 0; i < targetVelocitySize; i++)
+			{
+				targetVelocityArray[i] = pybullet_internalGetFloatFromSequence(targetVelocitySeq, i);
+			}
+			Py_DECREF(targetVelocitySeq);
 		}
+	}
 
+	if (targetForceObj)
+	{
+		int i = 0;
+		PyObject* targetForceSeq = 0;
+		targetForceSeq = PySequence_Fast(targetForceObj, "expected a force sequence");
+		targetForceSize = PySequence_Size(targetForceObj);
+
+		if (targetForceSize < 0)
+		{
+			targetForceSize = 0;
+		}
+		if (targetForceSize > 3)
+		{
+			targetForceSize = 3;
+		}
+		if (targetForceSeq)
+		{
+			for (i = 0; i < targetForceSize; i++)
+			{
+				targetForceArray[i] = pybullet_internalGetFloatFromSequence(targetForceSeq, i);
+			}
+			Py_DECREF(targetForceSeq);
+		}
 	}
 
 	//if (targetPositionSize == 0 && targetVelocitySize == 0)
@@ -2479,11 +2685,11 @@ static PyObject* pybullet_setJointMotorControlMultiDof(PyObject* self, PyObject*
 			return NULL;
 		}
 
-		if (//(controlMode != CONTROL_MODE_VELOCITY)&&
-			//(controlMode != CONTROL_MODE_TORQUE) &&
-			(controlMode != CONTROL_MODE_POSITION_VELOCITY_PD)//&&
+		if (  //(controlMode != CONTROL_MODE_VELOCITY)&&
+			(controlMode != CONTROL_MODE_TORQUE) &&
+			(controlMode != CONTROL_MODE_POSITION_VELOCITY_PD)  //&&
 			//(controlMode != CONTROL_MODE_PD)
-			)
+		)
 		{
 			PyErr_SetString(SpamError, "Illegal control mode.");
 			return NULL;
@@ -2492,7 +2698,7 @@ static PyObject* pybullet_setJointMotorControlMultiDof(PyObject* self, PyObject*
 		commandHandle = b3JointControlCommandInit2(sm, bodyUniqueId, controlMode);
 
 		b3GetJointInfo(sm, bodyUniqueId, jointIndex, &info);
-				
+
 		switch (controlMode)
 		{
 #if 0
@@ -2505,51 +2711,57 @@ static PyObject* pybullet_setJointMotorControlMultiDof(PyObject* self, PyObject*
 			break;
 		}
 
-		case CONTROL_MODE_TORQUE:
-		{
-			b3JointControlSetDesiredForceTorque(commandHandle, info.m_uIndex,
-				force);
-			break;
-		}
 #endif
-		case CONTROL_MODE_POSITION_VELOCITY_PD:
-		case CONTROL_MODE_PD:
-		{
+			case CONTROL_MODE_TORQUE:
+			{
+				if (info.m_uSize == targetForceSize)
+				{
+					b3JointControlSetDesiredForceTorqueMultiDof(commandHandle, info.m_uIndex,
+																targetForceArray, targetForceSize);
+				}
+				break;
+			}
+			case CONTROL_MODE_POSITION_VELOCITY_PD:
+			case CONTROL_MODE_PD:
+			{
+				//make sure size == info.m_qSize
 
-			//make sure size == info.m_qSize
-			
-			if (maxVelocity > 0)
-			{
-				b3JointControlSetMaximumVelocity(commandHandle, info.m_uIndex, maxVelocity);
-			}
+				if (maxVelocity > 0)
+				{
+					b3JointControlSetMaximumVelocity(commandHandle, info.m_uIndex, maxVelocity);
+				}
 
-			if (info.m_qSize == targetPositionSize)
-			{
-				b3JointControlSetDesiredPositionMultiDof(commandHandle, info.m_qIndex,
-					targetPositionArray, targetPositionSize);
+				if (info.m_qSize == targetPositionSize)
+				{
+					b3JointControlSetDesiredPositionMultiDof(commandHandle, info.m_qIndex,
+															 targetPositionArray, targetPositionSize);
+				}
+				else
+				{
+					//printf("Warning: targetPosition array size doesn't match joint position size  (got %d, expected %d).",targetPositionSize, info.m_qSize);
+				}
+
+				b3JointControlSetKp(commandHandle, info.m_uIndex, kp);
+				if (info.m_uSize == targetVelocitySize)
+				{
+					b3JointControlSetDesiredVelocityMultiDof(commandHandle, info.m_uIndex,
+															 targetVelocityArray, targetVelocitySize);
+				}
+				else
+				{
+					//printf("Warning: targetVelocity array size doesn't match joint dimentions (got %d, expected %d).", targetVelocitySize, info.m_uSize);
+				}
+				b3JointControlSetKd(commandHandle, info.m_uIndex, kd);
+				if (info.m_uSize == targetForceSize || targetForceSize == 1)
+				{
+					b3JointControlSetDesiredForceTorqueMultiDof(commandHandle, info.m_uIndex,
+																targetForceArray, targetForceSize);
+				}
+				break;
 			}
-			else
+			default:
 			{
-				//printf("Warning: targetPosition array size doesn't match joint position size  (got %d, expected %d).",targetPositionSize, info.m_qSize);
 			}
-			
-			b3JointControlSetKp(commandHandle, info.m_uIndex, kp);
-			if (info.m_uSize == targetVelocitySize)
-			{
-				b3JointControlSetDesiredVelocityMultiDof(commandHandle, info.m_uIndex,
-					targetVelocityArray, targetVelocitySize);
-			}
-			else
-			{
-				//printf("Warning: targetVelocity array size doesn't match joint dimentions (got %d, expected %d).", targetVelocitySize, info.m_uSize);
-			}
-			b3JointControlSetKd(commandHandle, info.m_uIndex, kd);
-			b3JointControlSetMaximumForce(commandHandle, info.m_uIndex, force);
-			break;
-		}
-		default:
-		{
-		}
 		};
 
 		statusHandle = b3SubmitClientCommandAndWaitStatus(sm, commandHandle);
@@ -2560,7 +2772,6 @@ static PyObject* pybullet_setJointMotorControlMultiDof(PyObject* self, PyObject*
 	//  PyErr_SetString(SpamError, "Error parsing arguments in setJointControl.");
 	//  return NULL;
 }
-
 
 static PyObject* pybullet_setJointMotorControl2(PyObject* self, PyObject* args, PyObject* keywds)
 {
@@ -3632,15 +3843,15 @@ static PyObject* pybullet_resetJointStateMultiDof(PyObject* self, PyObject* args
 		b3PhysicsClientHandle sm = 0;
 		int bodyUniqueId;
 		int jointIndex;
-		double targetPositionArray[4] = { 0, 0, 0, 1 };
-		double targetVelocityArray[3] = { 0, 0, 0 };
+		double targetPositionArray[4] = {0, 0, 0, 1};
+		double targetVelocityArray[3] = {0, 0, 0};
 		int targetPositionSize = 0;
 		int targetVelocitySize = 0;
 		PyObject* targetPositionObj = 0;
 		PyObject* targetVelocityObj = 0;
-			
+
 		int physicsClientId = 0;
-		static char* kwlist[] = { "bodyUniqueId", "jointIndex", "targetValue", "targetVelocity", "physicsClientId", NULL };
+		static char* kwlist[] = {"bodyUniqueId", "jointIndex", "targetValue", "targetVelocity", "physicsClientId", NULL};
 		if (!PyArg_ParseTupleAndKeywords(args, keywds, "iiO|Oi", kwlist, &bodyUniqueId, &jointIndex, &targetPositionObj, &targetVelocityObj, &physicsClientId))
 		{
 			return NULL;
@@ -3663,16 +3874,20 @@ static PyObject* pybullet_resetJointStateMultiDof(PyObject* self, PyObject* args
 			{
 				targetPositionSize = 0;
 			}
-			if (targetPositionSize >4)
+			if (targetPositionSize > 4)
 			{
 				targetPositionSize = 4;
 			}
-			for (i = 0; i < targetPositionSize; i++)
+			if (targetPositionSeq)
 			{
-				targetPositionArray[i] = pybullet_internalGetFloatFromSequence(targetPositionSeq, i);
+				for (i = 0; i < targetPositionSize; i++)
+				{
+					targetPositionArray[i] = pybullet_internalGetFloatFromSequence(targetPositionSeq, i);
+				}
+				Py_DECREF(targetPositionSeq);
 			}
 		}
-		
+
 		if (targetVelocityObj)
 		{
 			int i = 0;
@@ -3684,15 +3899,18 @@ static PyObject* pybullet_resetJointStateMultiDof(PyObject* self, PyObject* args
 			{
 				targetVelocitySize = 0;
 			}
-			if (targetVelocitySize >3)
+			if (targetVelocitySize > 3)
 			{
 				targetVelocitySize = 3;
 			}
-			for (i = 0; i < targetVelocitySize; i++)
+			if (targetVelocitySeq)
 			{
-				targetVelocityArray[i] = pybullet_internalGetFloatFromSequence(targetVelocitySeq, i);
+				for (i = 0; i < targetVelocitySize; i++)
+				{
+					targetVelocityArray[i] = pybullet_internalGetFloatFromSequence(targetVelocitySeq, i);
+				}
+				Py_DECREF(targetVelocitySeq);
 			}
-
 		}
 
 		if (targetPositionSize == 0 && targetVelocitySize == 0)
@@ -4117,7 +4335,7 @@ static PyObject* pybullet_getJointStateMultiDof(PyObject* self, PyObject* args, 
 	PyObject* pyListJointState;
 	PyObject* pyListPosition;
 	PyObject* pyListVelocity;
-
+	PyObject* pyListJointMotorTorque;
 
 	struct b3JointSensorState2 sensorState;
 
@@ -4129,7 +4347,7 @@ static PyObject* pybullet_getJointStateMultiDof(PyObject* self, PyObject* args, 
 
 	b3PhysicsClientHandle sm = 0;
 	int physicsClientId = 0;
-	static char* kwlist[] = { "bodyUniqueId", "jointIndex", "physicsClientId", NULL };
+	static char* kwlist[] = {"bodyUniqueId", "jointIndex", "physicsClientId", NULL};
 	if (!PyArg_ParseTupleAndKeywords(args, keywds, "ii|i", kwlist, &bodyUniqueId, &jointIndex, &physicsClientId))
 	{
 		return NULL;
@@ -4178,32 +4396,34 @@ static PyObject* pybullet_getJointStateMultiDof(PyObject* self, PyObject* args, 
 				int i = 0;
 				pyListPosition = PyTuple_New(sensorState.m_qDofSize);
 				pyListVelocity = PyTuple_New(sensorState.m_uDofSize);
-
+				pyListJointMotorTorque = PyTuple_New(sensorState.m_uDofSize);
 				PyTuple_SetItem(pyListJointState, 0, pyListPosition);
 				PyTuple_SetItem(pyListJointState, 1, pyListVelocity);
 
 				for (i = 0; i < sensorState.m_qDofSize; i++)
 				{
 					PyTuple_SetItem(pyListPosition, i,
-						PyFloat_FromDouble(sensorState.m_jointPosition[i]));
+									PyFloat_FromDouble(sensorState.m_jointPosition[i]));
 				}
-				
+
 				for (i = 0; i < sensorState.m_uDofSize; i++)
 				{
 					PyTuple_SetItem(pyListVelocity, i,
-						PyFloat_FromDouble(sensorState.m_jointVelocity[i]));
+									PyFloat_FromDouble(sensorState.m_jointVelocity[i]));
+
+					PyTuple_SetItem(pyListJointMotorTorque, i,
+									PyFloat_FromDouble(sensorState.m_jointMotorTorqueMultiDof[i]));
 				}
-				
+
 				for (j = 0; j < forceTorqueSize; j++)
 				{
 					PyTuple_SetItem(pyListJointForceTorque, j,
-						PyFloat_FromDouble(sensorState.m_jointReactionForceTorque[j]));
+									PyFloat_FromDouble(sensorState.m_jointReactionForceTorque[j]));
 				}
 
 				PyTuple_SetItem(pyListJointState, 2, pyListJointForceTorque);
 
-				PyTuple_SetItem(pyListJointState, 3,
-					PyFloat_FromDouble(sensorState.m_jointMotorTorque));
+				PyTuple_SetItem(pyListJointState, 3, pyListJointMotorTorque);
 
 				return pyListJointState;
 			}
@@ -5130,7 +5350,7 @@ static PyObject* pybullet_rayTestBatch(PyObject* self, PyObject* args, PyObject*
 	int sizeTo = 0;
 	int parentObjectUniqueId = -1;
 	int parentLinkIndex = -1;
-	
+
 	static char* kwlist[] = {"rayFromPositions", "rayToPositions", "numThreads", "parentObjectUniqueId", "parentLinkIndex", "physicsClientId", NULL};
 	int physicsClientId = 0;
 
@@ -5219,9 +5439,9 @@ static PyObject* pybullet_rayTestBatch(PyObject* self, PyObject* args, PyObject*
 		}
 	}
 
-	if (parentObjectUniqueId>=0)
+	if (parentObjectUniqueId >= 0)
 	{
-		b3RaycastBatchSetParentObject(commandHandle, parentObjectUniqueId,parentLinkIndex);
+		b3RaycastBatchSetParentObject(commandHandle, parentObjectUniqueId, parentLinkIndex);
 	}
 
 	statusHandle = b3SubmitClientCommandAndWaitStatus(sm, commandHandle);
@@ -5994,7 +6214,7 @@ static PyObject* pybullet_changeVisualShape(PyObject* self, PyObject* args, PyOb
 	{
 		commandHandle = b3InitUpdateVisualShape2(sm, objectUniqueId, jointIndex, shapeIndex);
 
-		if (textureUniqueId>=-1)
+		if (textureUniqueId >= -1)
 		{
 			b3UpdateVisualShapeTexture(commandHandle, textureUniqueId);
 		}
@@ -6293,16 +6513,16 @@ static PyObject* pybullet_setCollisionFilterGroupMask(PyObject* self, PyObject* 
 
 	static char* kwlist[] = {"bodyUniqueId", "linkIndexA", "collisionFilterGroup", "collisionFilterMask", "physicsClientId", NULL};
 
+	if (!PyArg_ParseTupleAndKeywords(args, keywds, "iiii|i", kwlist,
+									 &bodyUniqueIdA, &linkIndexA, &collisionFilterGroup, &collisionFilterMask, &physicsClientId))
+		return NULL;
+
 	sm = getPhysicsClient(physicsClientId);
 	if (sm == 0)
 	{
 		PyErr_SetString(SpamError, "Not connected to physics server.");
 		return NULL;
 	}
-
-	if (!PyArg_ParseTupleAndKeywords(args, keywds, "iiii|i", kwlist,
-									 &bodyUniqueIdA, &linkIndexA, &collisionFilterGroup, &collisionFilterMask, &physicsClientId))
-		return NULL;
 
 	commandHandle = b3CollisionFilterCommandInit(sm);
 	b3SetCollisionFilterGroupMask(commandHandle, bodyUniqueIdA, linkIndexA, collisionFilterGroup, collisionFilterMask);
@@ -6329,16 +6549,16 @@ static PyObject* pybullet_setCollisionFilterPair(PyObject* self, PyObject* args,
 
 	static char* kwlist[] = {"bodyUniqueIdA", "bodyUniqueIdB", "linkIndexA", "linkIndexB", "enableCollision", "physicsClientId", NULL};
 
+	if (!PyArg_ParseTupleAndKeywords(args, keywds, "iiiii|i", kwlist,
+									 &bodyUniqueIdA, &bodyUniqueIdB, &linkIndexA, &linkIndexB, &enableCollision, &physicsClientId))
+		return NULL;
+
 	sm = getPhysicsClient(physicsClientId);
 	if (sm == 0)
 	{
 		PyErr_SetString(SpamError, "Not connected to physics server.");
 		return NULL;
 	}
-
-	if (!PyArg_ParseTupleAndKeywords(args, keywds, "iiiii|i", kwlist,
-									 &bodyUniqueIdA, &bodyUniqueIdB, &linkIndexA, &linkIndexB, &enableCollision, &physicsClientId))
-		return NULL;
 
 	commandHandle = b3CollisionFilterCommandInit(sm);
 	b3SetCollisionFilterPair(commandHandle, bodyUniqueIdA, bodyUniqueIdB, linkIndexA, linkIndexB, enableCollision);
@@ -6670,14 +6890,13 @@ static PyObject* pybullet_enableJointForceTorqueSensor(PyObject* self, PyObject*
 	return NULL;
 }
 
-
 static int extractVertices(PyObject* verticesObj, double* vertices, int maxNumVertices)
 {
-	int numVerticesOut=0;
+	int numVerticesOut = 0;
 
 	if (verticesObj)
 	{
-		PyObject* seqVerticesObj= PySequence_Fast(verticesObj, "expected a sequence of vertex positions");
+		PyObject* seqVerticesObj = PySequence_Fast(verticesObj, "expected a sequence of vertex positions");
 		if (seqVerticesObj)
 		{
 			int numVerticesSrc = PySequence_Size(seqVerticesObj);
@@ -6696,9 +6915,12 @@ static int extractVertices(PyObject* verticesObj, double* vertices, int maxNumVe
 					double vertex[3];
 					if (pybullet_internalSetVectord(vertexObj, vertex))
 					{
-						vertices[numVerticesOut*3+0]=vertex[0];
-						vertices[numVerticesOut*3+1]=vertex[1];
-						vertices[numVerticesOut*3+2]=vertex[2];
+						if (vertices)
+						{
+							vertices[numVerticesOut * 3 + 0] = vertex[0];
+							vertices[numVerticesOut * 3 + 1] = vertex[1];
+							vertices[numVerticesOut * 3 + 2] = vertex[2];
+						}
 						numVerticesOut++;
 					}
 				}
@@ -6708,13 +6930,51 @@ static int extractVertices(PyObject* verticesObj, double* vertices, int maxNumVe
 	return numVerticesOut;
 }
 
+static int extractUVs(PyObject* uvsObj, double* uvs, int maxNumVertices)
+{
+	int numUVOut = 0;
+
+	if (uvsObj)
+	{
+		PyObject* seqVerticesObj = PySequence_Fast(uvsObj, "expected a sequence of uvs");
+		if (seqVerticesObj)
+		{
+			int numVerticesSrc = PySequence_Size(seqVerticesObj);
+			{
+				int i;
+
+				if (numVerticesSrc > B3_MAX_NUM_VERTICES)
+				{
+					PyErr_SetString(SpamError, "Number of uvs exceeds the maximum.");
+					Py_DECREF(seqVerticesObj);
+					return 0;
+				}
+				for (i = 0; i < numVerticesSrc; i++)
+				{
+					PyObject* vertexObj = PySequence_GetItem(seqVerticesObj, i);
+					double uv[2];
+					if (pybullet_internalSetVector2d(vertexObj, uv))
+					{
+						if (uvs)
+						{
+							uvs[numUVOut * 2 + 0] = uv[0];
+							uvs[numUVOut * 2 + 1] = uv[1];
+						}
+						numUVOut++;
+					}
+				}
+			}
+		}
+	}
+	return numUVOut;
+}
 static int extractIndices(PyObject* indicesObj, int* indices, int maxNumIndices)
 {
-	int numIndicesOut=0;
+	int numIndicesOut = 0;
 
 	if (indicesObj)
 	{
-		PyObject* seqIndicesObj= PySequence_Fast(indicesObj, "expected a sequence of indices");
+		PyObject* seqIndicesObj = PySequence_Fast(indicesObj, "expected a sequence of indices");
 		if (seqIndicesObj)
 		{
 			int numIndicesSrc = PySequence_Size(seqIndicesObj);
@@ -6729,8 +6989,11 @@ static int extractIndices(PyObject* indicesObj, int* indices, int maxNumIndices)
 				}
 				for (i = 0; i < numIndicesSrc; i++)
 				{
-					int index = pybullet_internalGetIntFromSequence(seqIndicesObj,i);
-					indices[numIndicesOut]=index;
+					int index = pybullet_internalGetIntFromSequence(seqIndicesObj, i);
+					if (indices)
+					{
+						indices[numIndicesOut] = index;
+					}
 					numIndicesOut++;
 				}
 			}
@@ -6806,27 +7069,29 @@ static PyObject* pybullet_createCollisionShape(PyObject* self, PyObject* args, P
 		}
 		if (shapeType == GEOM_MESH && verticesObj)
 		{
-			int numVertices=0;
-			int numIndices=0;
-
-			double vertices[B3_MAX_NUM_VERTICES*3];
-			int indices[B3_MAX_NUM_INDICES];
+			int numVertices = extractVertices(verticesObj, 0, B3_MAX_NUM_VERTICES);
+			int numIndices = extractIndices(indicesObj, 0, B3_MAX_NUM_INDICES);
+			double* vertices = numVertices ? malloc(numVertices * 3 * sizeof(double)) : 0;
+			int* indices = numIndices ? malloc(numIndices * sizeof(int)) : 0;
 
 			numVertices = extractVertices(verticesObj, vertices, B3_MAX_NUM_VERTICES);
 			pybullet_internalSetVectord(meshScaleObj, meshScale);
-						
+
 			if (indicesObj)
 			{
-				numIndices = extractIndices(indicesObj, indices,B3_MAX_NUM_INDICES);
+				numIndices = extractIndices(indicesObj, indices, B3_MAX_NUM_INDICES);
 			}
 
 			if (numIndices)
 			{
-				shapeIndex = b3CreateCollisionShapeAddConcaveMesh(commandHandle, meshScale, vertices, numVertices, indices, numIndices);
-			} else
-			{
-				shapeIndex = b3CreateCollisionShapeAddConvexMesh(commandHandle, meshScale, vertices, numVertices);
+				shapeIndex = b3CreateCollisionShapeAddConcaveMesh(sm, commandHandle, meshScale, vertices, numVertices, indices, numIndices);
 			}
+			else
+			{
+				shapeIndex = b3CreateCollisionShapeAddConvexMesh(sm, commandHandle, meshScale, vertices, numVertices);
+			}
+			free(vertices);
+			free(indices);
 		}
 
 		if (shapeType == GEOM_PLANE)
@@ -7114,9 +7379,14 @@ static PyObject* pybullet_createVisualShape(PyObject* self, PyObject* args, PyOb
 
 	PyObject* halfExtentsObj = 0;
 
-	static char* kwlist[] = {"shapeType", "radius", "halfExtents", "length", "fileName", "meshScale", "planeNormal", "flags", "rgbaColor", "specularColor", "visualFramePosition", "visualFrameOrientation", "physicsClientId", NULL};
-	if (!PyArg_ParseTupleAndKeywords(args, keywds, "i|dOdsOOiOOOOi", kwlist,
-									 &shapeType, &radius, &halfExtentsObj, &length, &fileName, &meshScaleObj, &planeNormalObj, &flags, &rgbaColorObj, &specularColorObj, &visualFramePositionObj, &visualFrameOrientationObj, &physicsClientId))
+	PyObject* verticesObj = 0;
+	PyObject* indicesObj = 0;
+	PyObject* normalsObj = 0;
+	PyObject* uvsObj = 0;
+
+	static char* kwlist[] = {"shapeType", "radius", "halfExtents", "length", "fileName", "meshScale", "planeNormal", "flags", "rgbaColor", "specularColor", "visualFramePosition", "visualFrameOrientation", "vertices", "indices", "normals", "uvs", "physicsClientId", NULL};
+	if (!PyArg_ParseTupleAndKeywords(args, keywds, "i|dOdsOOiOOOOOOOOi", kwlist,
+									 &shapeType, &radius, &halfExtentsObj, &length, &fileName, &meshScaleObj, &planeNormalObj, &flags, &rgbaColorObj, &specularColorObj, &visualFramePositionObj, &visualFrameOrientationObj, &verticesObj, &indicesObj, &normalsObj, &uvsObj, &physicsClientId))
 	{
 		return NULL;
 	}
@@ -7159,6 +7429,45 @@ static PyObject* pybullet_createVisualShape(PyObject* self, PyObject* args, PyOb
 			pybullet_internalSetVectord(meshScaleObj, meshScale);
 			shapeIndex = b3CreateVisualShapeAddMesh(commandHandle, fileName, meshScale);
 		}
+
+		if (shapeType == GEOM_MESH && verticesObj && indicesObj)
+		{
+			int numVertices = extractVertices(verticesObj, 0, B3_MAX_NUM_VERTICES);
+			int numIndices = extractIndices(indicesObj, 0, B3_MAX_NUM_INDICES);
+			int numNormals = extractVertices(normalsObj, 0, B3_MAX_NUM_VERTICES);
+			int numUVs = extractUVs(uvsObj, 0, B3_MAX_NUM_VERTICES);
+
+			double* vertices = numVertices ? malloc(numVertices * 3 * sizeof(double)) : 0;
+			int* indices = numIndices ? malloc(numIndices * sizeof(int)) : 0;
+			double* normals = numNormals ? malloc(numNormals * 3 * sizeof(double)) : 0;
+			double* uvs = numUVs ? malloc(numUVs * 2 * sizeof(double)) : 0;
+
+			numVertices = extractVertices(verticesObj, vertices, B3_MAX_NUM_VERTICES);
+			pybullet_internalSetVectord(meshScaleObj, meshScale);
+
+			if (indicesObj)
+			{
+				numIndices = extractIndices(indicesObj, indices, B3_MAX_NUM_INDICES);
+			}
+			if (numNormals)
+			{
+				extractVertices(normalsObj, normals, numNormals);
+			}
+			if (numUVs)
+			{
+				extractUVs(uvsObj, uvs, numUVs);
+			}
+
+			if (numIndices)
+			{
+				shapeIndex = b3CreateVisualShapeAddMesh2(sm, commandHandle, meshScale, vertices, numVertices, indices, numIndices, normals, numNormals, uvs, numUVs);
+			}
+			free(uvs);
+			free(normals);
+			free(vertices);
+			free(indices);
+		}
+
 		if (shapeType == GEOM_PLANE)
 		{
 			double planeConstant = 0;
@@ -7471,18 +7780,19 @@ static PyObject* pybullet_createMultiBody(PyObject* self, PyObject* args, PyObje
 	PyObject* linkJointAxisObj = 0;
 	PyObject* linkInertialFramePositionObj = 0;
 	PyObject* linkInertialFrameOrientationObj = 0;
+	PyObject* objBatchPositions = 0;
 
 	static char* kwlist[] = {
 		"baseMass", "baseCollisionShapeIndex", "baseVisualShapeIndex", "basePosition", "baseOrientation",
 		"baseInertialFramePosition", "baseInertialFrameOrientation", "linkMasses", "linkCollisionShapeIndices",
 		"linkVisualShapeIndices", "linkPositions", "linkOrientations", "linkInertialFramePositions", "linkInertialFrameOrientations", "linkParentIndices",
-		"linkJointTypes", "linkJointAxis", "useMaximalCoordinates", "flags", "physicsClientId", NULL};
+		"linkJointTypes", "linkJointAxis", "useMaximalCoordinates", "flags", "batchPositions", "physicsClientId", NULL};
 
-	if (!PyArg_ParseTupleAndKeywords(args, keywds, "|diiOOOOOOOOOOOOOOiii", kwlist,
+	if (!PyArg_ParseTupleAndKeywords(args, keywds, "|diiOOOOOOOOOOOOOOiiOi", kwlist,
 									 &baseMass, &baseCollisionShapeIndex, &baseVisualShapeIndex, &basePosObj, &baseOrnObj,
 									 &baseInertialFramePositionObj, &baseInertialFrameOrientationObj, &linkMassesObj, &linkCollisionShapeIndicesObj,
 									 &linkVisualShapeIndicesObj, &linkPositionsObj, &linkOrientationsObj, &linkInertialFramePositionObj, &linkInertialFrameOrientationObj, &linkParentIndicesObj,
-									 &linkJointTypesObj, &linkJointAxisObj, &useMaximalCoordinates, &flags, &physicsClientId))
+									 &linkJointTypesObj, &linkJointAxisObj, &useMaximalCoordinates, &flags, &objBatchPositions, &physicsClientId))
 	{
 		return NULL;
 	}
@@ -7505,6 +7815,7 @@ static PyObject* pybullet_createMultiBody(PyObject* self, PyObject* args, PyObje
 		int numLinkJoinAxis = linkJointAxisObj ? PySequence_Size(linkJointAxisObj) : 0;
 		int numLinkInertialFramePositions = linkInertialFramePositionObj ? PySequence_Size(linkInertialFramePositionObj) : 0;
 		int numLinkInertialFrameOrientations = linkInertialFrameOrientationObj ? PySequence_Size(linkInertialFrameOrientationObj) : 0;
+		int numBatchPositions = objBatchPositions ? PySequence_Size(objBatchPositions) : 0;
 
 		PyObject* seqLinkMasses = linkMassesObj ? PySequence_Fast(linkMassesObj, "expected a sequence") : 0;
 		PyObject* seqLinkCollisionShapes = linkCollisionShapeIndicesObj ? PySequence_Fast(linkCollisionShapeIndicesObj, "expected a sequence") : 0;
@@ -7516,6 +7827,8 @@ static PyObject* pybullet_createMultiBody(PyObject* self, PyObject* args, PyObje
 		PyObject* seqLinkJoinAxis = linkJointAxisObj ? PySequence_Fast(linkJointAxisObj, "expected a sequence") : 0;
 		PyObject* seqLinkInertialFramePositions = linkInertialFramePositionObj ? PySequence_Fast(linkInertialFramePositionObj, "expected a sequence") : 0;
 		PyObject* seqLinkInertialFrameOrientations = linkInertialFrameOrientationObj ? PySequence_Fast(linkInertialFrameOrientationObj, "expected a sequence") : 0;
+
+		PyObject* seqBatchPositions = objBatchPositions ? PySequence_Fast(objBatchPositions, "expected a sequence") : 0;
 
 		if ((numLinkMasses == numLinkCollisionShapes) &&
 			(numLinkMasses == numLinkVisualShapes) &&
@@ -7543,6 +7856,17 @@ static PyObject* pybullet_createMultiBody(PyObject* self, PyObject* args, PyObje
 
 			baseIndex = b3CreateMultiBodyBase(commandHandle, baseMass, baseCollisionShapeIndex, baseVisualShapeIndex, basePosition, baseOrientation, baseInertialFramePosition, baseInertialFrameOrientation);
 
+			if (numBatchPositions > 0)
+			{
+				double* batchPositions = malloc(sizeof(double) * 3 * numBatchPositions);
+				for (i = 0; i < numBatchPositions; i++)
+				{
+					pybullet_internalGetVector3FromSequence(seqBatchPositions, i, &batchPositions[3 * i]);
+				}
+				b3CreateMultiBodySetBatchPositions(sm, commandHandle, batchPositions, numBatchPositions);
+				free(batchPositions);
+			}
+
 			for (i = 0; i < numLinkMasses; i++)
 			{
 				double linkMass = pybullet_internalGetFloatFromSequence(seqLinkMasses, i);
@@ -7557,7 +7881,7 @@ static PyObject* pybullet_createMultiBody(PyObject* self, PyObject* args, PyObje
 				int linkJointType;
 
 				pybullet_internalGetVector3FromSequence(seqLinkInertialFramePositions, i, linkInertialFramePosition);
-				pybullet_internalGetVector4FromSequence(linkInertialFrameOrientationObj, i, linkInertialFrameOrientation);
+				pybullet_internalGetVector4FromSequence(seqLinkInertialFrameOrientations, i, linkInertialFrameOrientation);
 				pybullet_internalGetVector3FromSequence(seqLinkPositions, i, linkPosition);
 				pybullet_internalGetVector4FromSequence(seqLinkOrientations, i, linkOrientation);
 				pybullet_internalGetVector3FromSequence(seqLinkJoinAxis, i, linkJointAxis);
@@ -7597,6 +7921,8 @@ static PyObject* pybullet_createMultiBody(PyObject* self, PyObject* args, PyObje
 				Py_DECREF(seqLinkInertialFramePositions);
 			if (seqLinkInertialFrameOrientations)
 				Py_DECREF(seqLinkInertialFrameOrientations);
+			if (seqBatchPositions)
+				Py_DECREF(seqBatchPositions);
 
 			if (useMaximalCoordinates > 0)
 			{
@@ -7637,7 +7963,8 @@ static PyObject* pybullet_createMultiBody(PyObject* self, PyObject* args, PyObje
 				Py_DECREF(seqLinkInertialFramePositions);
 			if (seqLinkInertialFrameOrientations)
 				Py_DECREF(seqLinkInertialFrameOrientations);
-
+			if (seqBatchPositions)
+				Py_DECREF(seqBatchPositions);
 			PyErr_SetString(SpamError, "All link arrays need to be same size.");
 			return NULL;
 		}
@@ -8818,7 +9145,7 @@ static PyObject* pybullet_rotateVector(PyObject* self, PyObject* args, PyObject*
 	int hasQuat = 0;
 	int hasVec = 0;
 
-	static char* kwlist[] = { "quaternion", "vector", "physicsClientId", NULL };
+	static char* kwlist[] = {"quaternion", "vector", "physicsClientId", NULL};
 	if (!PyArg_ParseTupleAndKeywords(args, keywds, "OO|i", kwlist, &quatObj, &vectorObj, &physicsClientId))
 	{
 		return NULL;
@@ -8855,7 +9182,6 @@ static PyObject* pybullet_rotateVector(PyObject* self, PyObject* args, PyObject*
 	return Py_None;
 }
 
-
 static PyObject* pybullet_calculateVelocityQuaternion(PyObject* self, PyObject* args, PyObject* keywds)
 {
 	PyObject* quatStartObj;
@@ -8867,7 +9193,7 @@ static PyObject* pybullet_calculateVelocityQuaternion(PyObject* self, PyObject* 
 	int hasQuatStart = 0;
 	int hasQuatEnd = 0;
 
-	static char* kwlist[] = { "quaternionStart", "quaternionEnd", "deltaTime", "physicsClientId", NULL };
+	static char* kwlist[] = {"quaternionStart", "quaternionEnd", "deltaTime", "physicsClientId", NULL};
 	if (!PyArg_ParseTupleAndKeywords(args, keywds, "OOd|i", kwlist, &quatStartObj, &quatEndObj, &deltaTime, &physicsClientId))
 	{
 		return NULL;
@@ -8904,8 +9230,7 @@ static PyObject* pybullet_calculateVelocityQuaternion(PyObject* self, PyObject* 
 	return Py_None;
 }
 
-
-static PyObject* pybullet_getQuaternionSlerp(PyObject* self,	PyObject* args, PyObject* keywds)
+static PyObject* pybullet_getQuaternionSlerp(PyObject* self, PyObject* args, PyObject* keywds)
 {
 	PyObject* quatStartObj;
 	PyObject* quatEndObj;
@@ -8916,7 +9241,7 @@ static PyObject* pybullet_getQuaternionSlerp(PyObject* self,	PyObject* args, PyO
 	int hasQuatStart = 0;
 	int hasQuatEnd = 0;
 
-	static char* kwlist[] = { "quaternionStart", "quaternionEnd", "interpolationFraction", "physicsClientId", NULL };
+	static char* kwlist[] = {"quaternionStart", "quaternionEnd", "interpolationFraction", "physicsClientId", NULL};
 	if (!PyArg_ParseTupleAndKeywords(args, keywds, "OOd|i", kwlist, &quatStartObj, &quatEndObj, &interpolationFraction, &physicsClientId))
 	{
 		return NULL;
@@ -8953,7 +9278,6 @@ static PyObject* pybullet_getQuaternionSlerp(PyObject* self,	PyObject* args, PyO
 	return Py_None;
 }
 
-
 static PyObject* pybullet_getAxisAngleFromQuaternion(PyObject* self, PyObject* args, PyObject* keywds)
 {
 	int physicsClientId = 0;
@@ -8961,7 +9285,7 @@ static PyObject* pybullet_getAxisAngleFromQuaternion(PyObject* self, PyObject* a
 	double quat[4];
 	int hasQuat = 0;
 
-	static char* kwlist[] = { "quaternion", "physicsClientId", NULL };
+	static char* kwlist[] = {"quaternion", "physicsClientId", NULL};
 	if (!PyArg_ParseTupleAndKeywords(args, keywds, "O|i", kwlist, &quatObj, &physicsClientId))
 	{
 		return NULL;
@@ -8988,7 +9312,7 @@ static PyObject* pybullet_getAxisAngleFromQuaternion(PyObject* self, PyObject* a
 				PyTuple_SetItem(pylist2, 0, axislist);
 			}
 			PyTuple_SetItem(pylist2, 1, PyFloat_FromDouble(angle));
-			
+
 			return pylist2;
 		}
 	}
@@ -9001,7 +9325,6 @@ static PyObject* pybullet_getAxisAngleFromQuaternion(PyObject* self, PyObject* a
 	return Py_None;
 }
 
-
 static PyObject* pybullet_getQuaternionFromAxisAngle(PyObject* self, PyObject* args, PyObject* keywds)
 {
 	PyObject* axisObj;
@@ -9010,8 +9333,8 @@ static PyObject* pybullet_getQuaternionFromAxisAngle(PyObject* self, PyObject* a
 	int physicsClientId = 0;
 	int hasAxis = 0;
 
-	static char* kwlist[] = { "axis", "angle","physicsClientId", NULL };
-	if (!PyArg_ParseTupleAndKeywords(args, keywds, "Od|i", kwlist, &axisObj, &angle,&physicsClientId))
+	static char* kwlist[] = {"axis", "angle", "physicsClientId", NULL};
+	if (!PyArg_ParseTupleAndKeywords(args, keywds, "Od|i", kwlist, &axisObj, &angle, &physicsClientId))
 	{
 		return NULL;
 	}
@@ -9043,6 +9366,52 @@ static PyObject* pybullet_getQuaternionFromAxisAngle(PyObject* self, PyObject* a
 	return Py_None;
 }
 
+static PyObject* pybullet_getAxisDifferenceQuaternion(PyObject* self, PyObject* args, PyObject* keywds)
+{
+	PyObject* quatStartObj;
+	PyObject* quatEndObj;
+	double quatStart[4];
+	double quatEnd[4];
+	int physicsClientId = 0;
+	int hasQuatStart = 0;
+	int hasQuatEnd = 0;
+
+	static char* kwlist[] = {"quaternionStart", "quaternionEnd", "physicsClientId", NULL};
+	if (!PyArg_ParseTupleAndKeywords(args, keywds, "OO|i", kwlist, &quatStartObj, &quatEndObj, &physicsClientId))
+	{
+		return NULL;
+	}
+
+	if (quatStartObj)
+	{
+		hasQuatStart = pybullet_internalSetVector4d(quatStartObj, quatStart);
+	}
+
+	if (quatEndObj)
+	{
+		hasQuatEnd = pybullet_internalSetVector4d(quatEndObj, quatEnd);
+	}
+	if (hasQuatStart && hasQuatEnd)
+	{
+		double axisOut[3];
+		b3GetAxisDifferenceQuaternion(quatStart, quatEnd, axisOut);
+		{
+			PyObject* pylist;
+			int i;
+			pylist = PyTuple_New(3);
+			for (i = 0; i < 3; i++)
+				PyTuple_SetItem(pylist, i, PyFloat_FromDouble(axisOut[i]));
+			return pylist;
+		}
+	}
+	else
+	{
+		PyErr_SetString(SpamError, "Require start and end quaternion, each with 4 components [x,y,z,w].");
+		return NULL;
+	}
+	Py_INCREF(Py_None);
+	return Py_None;
+}
 
 static PyObject* pybullet_getDifferenceQuaternion(PyObject* self, PyObject* args, PyObject* keywds)
 {
@@ -9054,7 +9423,7 @@ static PyObject* pybullet_getDifferenceQuaternion(PyObject* self, PyObject* args
 	int hasQuatStart = 0;
 	int hasQuatEnd = 0;
 
-	static char* kwlist[] = { "quaternionStart", "quaternionEnd", "physicsClientId", NULL };
+	static char* kwlist[] = {"quaternionStart", "quaternionEnd", "physicsClientId", NULL};
 	if (!PyArg_ParseTupleAndKeywords(args, keywds, "OO|i", kwlist, &quatStartObj, &quatEndObj, &physicsClientId))
 	{
 		return NULL;
@@ -9090,8 +9459,6 @@ static PyObject* pybullet_getDifferenceQuaternion(PyObject* self, PyObject* args
 	Py_INCREF(Py_None);
 	return Py_None;
 }
-
-
 
 /// quaternion <-> euler yaw/pitch/roll convention from URDF/SDF, see Gazebo
 /// https://github.com/arpg/Gazebo/blob/master/gazebo/math/Quaternion.cc
@@ -9412,6 +9779,10 @@ static PyObject* pybullet_calculateInverseKinematics(PyObject* self,
 			{
 				PyErr_SetString(SpamError,
 								"calculateInverseKinematics the size of input current positions needs to be equal to the number of degrees of freedom.");
+				free(lowerLimits); 
+                        	free(upperLimits); 
+                        	free(jointRanges); 
+                        	free(restPoses); 
 				return NULL;
 			}
 			else
@@ -9503,6 +9874,11 @@ static PyObject* pybullet_calculateInverseKinematics(PyObject* self,
 			free(currentPositions);
 			free(jointDamping);
 
+			free(lowerLimits);
+                        free(upperLimits);
+                        free(jointRanges);
+                        free(restPoses);
+
 			statusHandle = b3SubmitClientCommandAndWaitStatus(sm, command);
 
 			result = b3GetStatusInverseKinematicsJointPositions(statusHandle,
@@ -9558,13 +9934,16 @@ static PyObject* pybullet_calculateInverseDynamics(PyObject* self, PyObject* arg
 		PyObject* objVelocitiesQdot;
 		PyObject* objAccelerations;
 		int physicsClientId = 0;
+		int flags = 0;
 		b3PhysicsClientHandle sm = 0;
 		static char* kwlist[] = {"bodyUniqueId", "objPositions",
 								 "objVelocities", "objAccelerations",
+								 "flags",
 								 "physicsClientId", NULL};
-		if (!PyArg_ParseTupleAndKeywords(args, keywds, "iOOO|i", kwlist,
+		if (!PyArg_ParseTupleAndKeywords(args, keywds, "iOOO|ii", kwlist,
 										 &bodyUniqueId, &objPositionsQ,
 										 &objVelocitiesQdot, &objAccelerations,
+										 &flags,
 										 &physicsClientId))
 		{
 			static char* kwlist2[] = {"bodyIndex", "objPositions",
@@ -9590,7 +9969,6 @@ static PyObject* pybullet_calculateInverseDynamics(PyObject* self, PyObject* arg
 			int szObVel = PySequence_Size(objVelocitiesQdot);
 			int szObAcc = PySequence_Size(objAccelerations);
 
-			
 			if (szObVel == szObAcc)
 			{
 				int szInBytesQ = sizeof(double) * szObPos;
@@ -9600,7 +9978,6 @@ static PyObject* pybullet_calculateInverseDynamics(PyObject* self, PyObject* arg
 				double* jointPositionsQ = (double*)malloc(szInBytesQ);
 				double* jointVelocitiesQdot = (double*)malloc(szInBytesQdot);
 				double* jointAccelerations = (double*)malloc(szInBytesQdot);
-				double* jointForcesOutput = (double*)malloc(szInBytesQdot);
 
 				for (i = 0; i < szObPos; i++)
 				{
@@ -9618,10 +9995,12 @@ static PyObject* pybullet_calculateInverseDynamics(PyObject* self, PyObject* arg
 				{
 					b3SharedMemoryStatusHandle statusHandle;
 					int statusType;
+
 					b3SharedMemoryCommandHandle commandHandle =
 						b3CalculateInverseDynamicsCommandInit2(
 							sm, bodyUniqueId, jointPositionsQ, szObPos, jointVelocitiesQdot,
 							jointAccelerations, szObVel);
+					b3CalculateInverseDynamicsSetFlags(commandHandle, flags);
 					statusHandle = b3SubmitClientCommandAndWaitStatus(sm, commandHandle);
 
 					statusType = b3GetStatusType(statusHandle);
@@ -9630,14 +10009,13 @@ static PyObject* pybullet_calculateInverseDynamics(PyObject* self, PyObject* arg
 					{
 						int bodyUniqueId;
 						int dofCount;
-
-						b3GetStatusInverseDynamicsJointForces(statusHandle, &bodyUniqueId,
-															  &dofCount, 0);
+						b3GetStatusInverseDynamicsJointForces(statusHandle, &bodyUniqueId, &dofCount, 0);
 
 						if (dofCount)
 						{
-							b3GetStatusInverseDynamicsJointForces(statusHandle, 0, 0,
-																  jointForcesOutput);
+							double* jointForcesOutput = (double*)malloc(sizeof(double) * dofCount);
+
+							b3GetStatusInverseDynamicsJointForces(statusHandle, 0, 0, jointForcesOutput);
 							{
 								{
 									int i;
@@ -9647,6 +10025,7 @@ static PyObject* pybullet_calculateInverseDynamics(PyObject* self, PyObject* arg
 														PyFloat_FromDouble(jointForcesOutput[i]));
 								}
 							}
+							free(jointForcesOutput);
 						}
 					}
 					else
@@ -9658,7 +10037,7 @@ static PyObject* pybullet_calculateInverseDynamics(PyObject* self, PyObject* arg
 				free(jointPositionsQ);
 				free(jointVelocitiesQdot);
 				free(jointAccelerations);
-				free(jointForcesOutput);
+
 				if (pylist) return pylist;
 			}
 			else
@@ -9872,9 +10251,10 @@ static PyObject* pybullet_calculateMassMatrix(PyObject* self, PyObject* args, Py
 		PyObject* objPositions;
 		int physicsClientId = 0;
 		b3PhysicsClientHandle sm = 0;
-		static char* kwlist[] = {"bodyUniqueId", "objPositions", "physicsClientId", NULL};
-		if (!PyArg_ParseTupleAndKeywords(args, keywds, "iO|i", kwlist,
-										 &bodyUniqueId, &objPositions, &physicsClientId))
+		int flags = 0;
+		static char* kwlist[] = {"bodyUniqueId", "objPositions", "flags", "physicsClientId", NULL};
+		if (!PyArg_ParseTupleAndKeywords(args, keywds, "iO|ii", kwlist,
+										 &bodyUniqueId, &objPositions, &flags, &physicsClientId))
 		{
 			return NULL;
 		}
@@ -9887,15 +10267,16 @@ static PyObject* pybullet_calculateMassMatrix(PyObject* self, PyObject* args, Py
 
 		{
 			int szObPos = PySequence_Size(objPositions);
-			int numJoints = b3GetNumJoints(sm, bodyUniqueId);
-			if (numJoints && (szObPos == numJoints))
+			///int dofCountQ = b3GetNumJoints(sm, bodyUniqueId);
+
+			if (szObPos >= 0)  //(szObPos == dofCountQ))
 			{
-				int byteSizeJoints = sizeof(double) * numJoints;
-				PyObject* pyResultList;
+				int byteSizeJoints = sizeof(double) * szObPos;
+				PyObject* pyResultList = NULL;
 				double* jointPositions = (double*)malloc(byteSizeJoints);
 				double* massMatrix = NULL;
 				int i;
-				for (i = 0; i < numJoints; i++)
+				for (i = 0; i < szObPos; i++)
 				{
 					jointPositions[i] =
 						pybullet_internalGetFloatFromSequence(objPositions, i);
@@ -9904,17 +10285,18 @@ static PyObject* pybullet_calculateMassMatrix(PyObject* self, PyObject* args, Py
 					b3SharedMemoryStatusHandle statusHandle;
 					int statusType;
 					b3SharedMemoryCommandHandle commandHandle =
-						b3CalculateMassMatrixCommandInit(sm, bodyUniqueId, jointPositions);
+						b3CalculateMassMatrixCommandInit(sm, bodyUniqueId, jointPositions, szObPos);
+					b3CalculateMassMatrixSetFlags(commandHandle, flags);
 					statusHandle = b3SubmitClientCommandAndWaitStatus(sm, commandHandle);
 					statusType = b3GetStatusType(statusHandle);
 					if (statusType == CMD_CALCULATED_MASS_MATRIX_COMPLETED)
 					{
 						int dofCount;
 						b3GetStatusMassMatrix(sm, statusHandle, &dofCount, NULL);
+						pyResultList = PyTuple_New(dofCount);
 						if (dofCount)
 						{
 							int byteSizeDofCount = sizeof(double) * dofCount;
-							pyResultList = PyTuple_New(dofCount);
 
 							massMatrix = (double*)malloc(dofCount * byteSizeDofCount);
 							b3GetStatusMassMatrix(sm, statusHandle, NULL, massMatrix);
@@ -10039,6 +10421,9 @@ static PyMethodDef SpamMethods[] = {
 
 	{"saveState", (PyCFunction)pybullet_saveState, METH_VARARGS | METH_KEYWORDS,
 	 "Save the full state of the world to memory."},
+
+	 { "removeState", (PyCFunction)pybullet_removeState, METH_VARARGS | METH_KEYWORDS,
+	"Remove a state created using saveState by its state unique id." },
 
 	{"loadMJCF", (PyCFunction)pybullet_loadMJCF, METH_VARARGS | METH_KEYWORDS,
 	 "Load multibodies from an MJCF file."},
@@ -10169,8 +10554,8 @@ static PyMethodDef SpamMethods[] = {
 	{"getJointState", (PyCFunction)pybullet_getJointState, METH_VARARGS | METH_KEYWORDS,
 	 "Get the state (position, velocity etc) for a joint on a body."},
 
-	 { "getJointStateMultiDof", (PyCFunction)pybullet_getJointStateMultiDof, METH_VARARGS | METH_KEYWORDS,
-		"Get the state (position, velocity etc) for a joint on a body. (supports planar and spherical joints)" },
+	{"getJointStateMultiDof", (PyCFunction)pybullet_getJointStateMultiDof, METH_VARARGS | METH_KEYWORDS,
+	 "Get the state (position, velocity etc) for a joint on a body. (supports planar and spherical joints)"},
 
 	{"getJointStates", (PyCFunction)pybullet_getJointStates, METH_VARARGS | METH_KEYWORDS,
 	 "Get the state (position, velocity etc) for multiple joints on a body."},
@@ -10191,10 +10576,10 @@ static PyMethodDef SpamMethods[] = {
 	 "Reset the state (position, velocity etc) for a joint on a body "
 	 "instantaneously, not through physics simulation."},
 
-	 { "resetJointStateMultiDof", (PyCFunction)pybullet_resetJointStateMultiDof, METH_VARARGS | METH_KEYWORDS,
-		"resetJointStateMultiDof(objectUniqueId, jointIndex, targetValue, targetVelocity=0, physicsClientId=0)\n"
-		"Reset the state (position, velocity etc) for a joint on a body "
-		"instantaneously, not through physics simulation." },
+	{"resetJointStateMultiDof", (PyCFunction)pybullet_resetJointStateMultiDof, METH_VARARGS | METH_KEYWORDS,
+	 "resetJointStateMultiDof(objectUniqueId, jointIndex, targetValue, targetVelocity=0, physicsClientId=0)\n"
+	 "Reset the state (position, velocity etc) for a joint on a body "
+	 "instantaneously, not through physics simulation."},
 
 	{"changeDynamics", (PyCFunction)pybullet_changeDynamicsInfo, METH_VARARGS | METH_KEYWORDS,
 	 "change dynamics information such as mass, lateral friction coefficient."},
@@ -10211,10 +10596,10 @@ static PyMethodDef SpamMethods[] = {
 	 "Set a single joint motor control mode and desired target value. There is "
 	 "no immediate state change, stepSimulation will process the motors."},
 
-	 { "setJointMotorControlMultiDof", (PyCFunction)pybullet_setJointMotorControlMultiDof, METH_VARARGS | METH_KEYWORDS,
-		"Set a single joint motor control mode and desired target value. There is "
-		"no immediate state change, stepSimulation will process the motors."
-		"This method sets multi-degree-of-freedom motor such as the spherical joint motor." },
+	{"setJointMotorControlMultiDof", (PyCFunction)pybullet_setJointMotorControlMultiDof, METH_VARARGS | METH_KEYWORDS,
+	 "Set a single joint motor control mode and desired target value. There is "
+	 "no immediate state change, stepSimulation will process the motors."
+	 "This method sets multi-degree-of-freedom motor such as the spherical joint motor."},
 
 	{"setJointMotorControlArray", (PyCFunction)pybullet_setJointMotorControlArray, METH_VARARGS | METH_KEYWORDS,
 	 "Set an array of motors control mode and desired target value. There is "
@@ -10349,25 +10734,26 @@ static PyMethodDef SpamMethods[] = {
 	{"getMatrixFromQuaternion", (PyCFunction)pybullet_getMatrixFromQuaternion, METH_VARARGS | METH_KEYWORDS,
 	 "Compute the 3x3 matrix from a quaternion, as a list of 9 values (row-major)"},
 
-	 { "getQuaternionSlerp", (PyCFunction)pybullet_getQuaternionSlerp, METH_VARARGS | METH_KEYWORDS,
-	 "Compute the spherical interpolation given a start and end quaternion and an interpolation value in range [0..1]" },
+	{"getQuaternionSlerp", (PyCFunction)pybullet_getQuaternionSlerp, METH_VARARGS | METH_KEYWORDS,
+	 "Compute the spherical interpolation given a start and end quaternion and an interpolation value in range [0..1]"},
 
-	 { "getQuaternionFromAxisAngle", (PyCFunction)pybullet_getQuaternionFromAxisAngle, METH_VARARGS | METH_KEYWORDS,
-		 "Compute the quaternion from axis and angle representation." },
+	{"getQuaternionFromAxisAngle", (PyCFunction)pybullet_getQuaternionFromAxisAngle, METH_VARARGS | METH_KEYWORDS,
+	 "Compute the quaternion from axis and angle representation."},
 
-	 { "getAxisAngleFromQuaternion", (PyCFunction)pybullet_getAxisAngleFromQuaternion, METH_VARARGS | METH_KEYWORDS,
-		 "Compute the quaternion from axis and angle representation." },
+	{"getAxisAngleFromQuaternion", (PyCFunction)pybullet_getAxisAngleFromQuaternion, METH_VARARGS | METH_KEYWORDS,
+	 "Compute the quaternion from axis and angle representation."},
 
-	 { "getDifferenceQuaternion", (PyCFunction)pybullet_getDifferenceQuaternion, METH_VARARGS | METH_KEYWORDS,
-		 "Compute the quaternion difference from two quaternions." },
+	{"getDifferenceQuaternion", (PyCFunction)pybullet_getDifferenceQuaternion, METH_VARARGS | METH_KEYWORDS,
+	 "Compute the quaternion difference from two quaternions."},
 
-	 { "calculateVelocityQuaternion", (PyCFunction)pybullet_calculateVelocityQuaternion, METH_VARARGS | METH_KEYWORDS,
-		 "Compute the angular velocity given start and end quaternion and delta time." },
+	{"getAxisDifferenceQuaternion", (PyCFunction)pybullet_getAxisDifferenceQuaternion, METH_VARARGS | METH_KEYWORDS,
+	 "Compute the velocity axis difference from two quaternions."},
 
-	{ "rotateVector", (PyCFunction)pybullet_rotateVector, METH_VARARGS | METH_KEYWORDS,
-		"Rotate a vector using a quaternion." },
+	{"calculateVelocityQuaternion", (PyCFunction)pybullet_calculateVelocityQuaternion, METH_VARARGS | METH_KEYWORDS,
+	 "Compute the angular velocity given start and end quaternion and delta time."},
 
-		
+	{"rotateVector", (PyCFunction)pybullet_rotateVector, METH_VARARGS | METH_KEYWORDS,
+	 "Rotate a vector using a quaternion."},
 
 	{"calculateInverseDynamics", (PyCFunction)pybullet_calculateInverseDynamics, METH_VARARGS | METH_KEYWORDS,
 	 "Given an object id, joint positions, joint velocities and joint "
@@ -10464,11 +10850,11 @@ static PyMethodDef SpamMethods[] = {
 	{NULL, NULL, 0, NULL} /* Sentinel */
 };
 
-///copied from CommonWindowInterface.h
-
+///copied from CommonCallbacks.h
 enum
 {
 	B3G_ESCAPE = 27,
+	B3G_SPACE = 32,
 	B3G_F1 = 0xff00,
 	B3G_F2,
 	B3G_F3,
@@ -10498,7 +10884,7 @@ enum
 	B3G_SHIFT,
 	B3G_CONTROL,
 	B3G_ALT,
-	B3G_RETURN
+	B3G_RETURN,
 };
 
 #if PY_MAJOR_VERSION >= 3
@@ -10515,6 +10901,9 @@ static struct PyModuleDef moduledef = {
 };
 #endif
 
+#if __GNUC__ >= 4
+__attribute__((visibility ("default")))
+#endif
 PyMODINIT_FUNC
 #if PY_MAJOR_VERSION >= 3
 PyInit_pybullet(void)
@@ -10546,6 +10935,10 @@ initpybullet(void)
 	PyModule_AddIntConstant(m, "SHARED_MEMORY_SERVER", eCONNECT_SHARED_MEMORY_SERVER);  // user read
 #ifdef BT_ENABLE_DART
 	PyModule_AddIntConstant(m, "DART", eCONNECT_DART);  // user read
+#endif
+
+#ifdef BT_ENABLE_PHYSX
+	PyModule_AddIntConstant(m, "PhysX", eCONNECT_PHYSX);
 #endif
 
 #ifdef BT_ENABLE_MUJOCO
@@ -10660,11 +11053,14 @@ initpybullet(void)
 	PyModule_AddIntConstant(m, "URDF_INITIALIZE_SAT_FEATURES", URDF_INITIALIZE_SAT_FEATURES);
 	PyModule_AddIntConstant(m, "URDF_USE_MATERIAL_COLORS_FROM_MTL", URDF_USE_MATERIAL_COLORS_FROM_MTL);
 	PyModule_AddIntConstant(m, "URDF_USE_MATERIAL_TRANSPARANCY_FROM_MTL", URDF_USE_MATERIAL_TRANSPARANCY_FROM_MTL);
-	
+	PyModule_AddIntConstant(m, "URDF_MAINTAIN_LINK_ORDER", URDF_MAINTAIN_LINK_ORDER);
+
 	PyModule_AddIntConstant(m, "ACTIVATION_STATE_ENABLE_SLEEPING", eActivationStateEnableSleeping);
 	PyModule_AddIntConstant(m, "ACTIVATION_STATE_DISABLE_SLEEPING", eActivationStateDisableSleeping);
 	PyModule_AddIntConstant(m, "ACTIVATION_STATE_WAKE_UP", eActivationStateWakeUp);
 	PyModule_AddIntConstant(m, "ACTIVATION_STATE_SLEEP", eActivationStateSleep);
+	PyModule_AddIntConstant(m, "ACTIVATION_STATE_ENABLE_WAKEUP", eActivationStateEnableWakeup);
+	PyModule_AddIntConstant(m, "ACTIVATION_STATE_DISABLE_WAKEUP", eActivationStateDisableWakeup);
 
 	PyModule_AddIntConstant(m, "URDF_USE_SELF_COLLISION", URDF_USE_SELF_COLLISION);
 	PyModule_AddIntConstant(m, "URDF_USE_SELF_COLLISION_EXCLUDE_PARENT", URDF_USE_SELF_COLLISION_EXCLUDE_PARENT);
@@ -10706,6 +11102,7 @@ initpybullet(void)
 	PyModule_AddIntConstant(m, "B3G_CONTROL", B3G_CONTROL);
 	PyModule_AddIntConstant(m, "B3G_ALT", B3G_ALT);
 	PyModule_AddIntConstant(m, "B3G_RETURN", B3G_RETURN);
+	PyModule_AddIntConstant(m, "B3G_SPACE", B3G_SPACE);
 
 	PyModule_AddIntConstant(m, "GEOM_SPHERE", GEOM_SPHERE);
 	PyModule_AddIntConstant(m, "GEOM_BOX", GEOM_BOX);
@@ -10724,9 +11121,9 @@ initpybullet(void)
 	PyModule_AddIntConstant(m, "AddFileIOAction", eAddFileIOAction);
 	PyModule_AddIntConstant(m, "RemoveFileIOAction", eRemoveFileIOAction);
 
-	PyModule_AddIntConstant(m, "PosixFileIO", ePosixFileIO );
-	PyModule_AddIntConstant(m, "ZipFileIO", eZipFileIO );
-	PyModule_AddIntConstant(m, "CNSFileIO", eCNSFileIO );
+	PyModule_AddIntConstant(m, "PosixFileIO", ePosixFileIO);
+	PyModule_AddIntConstant(m, "ZipFileIO", eZipFileIO);
+	PyModule_AddIntConstant(m, "CNSFileIO", eCNSFileIO);
 
 	SpamError = PyErr_NewException("pybullet.error", NULL, NULL);
 	Py_INCREF(SpamError);
