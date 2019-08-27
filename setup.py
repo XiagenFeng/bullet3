@@ -117,6 +117,8 @@ sources = ["examples/pybullet/pybullet.c"]\
 +["examples/SharedMemory/InProcessMemory.cpp"]\
 +["examples/SharedMemory/PhysicsClient.cpp"]\
 +["examples/SharedMemory/PhysicsServer.cpp"]\
++["examples/SharedMemory/GraphicsClientExample.cpp"]\
++["examples/SharedMemory/RemoteGUIHelper.cpp"]\
 +["examples/SharedMemory/PhysicsServerExample.cpp"]\
 +["examples/SharedMemory/PhysicsServerExampleBullet2.cpp"]\
 +["examples/SharedMemory/SharedMemoryInProcessPhysicsC_API.cpp"]\
@@ -483,7 +485,7 @@ if 'BT_USE_EGL' in EGL_CXX_FLAGS:
 
 setup(
     name='pybullet',
-    version='2.5.0',
+    version='2.5.5',
     description=
     'Official Python Interface for the Bullet Physics SDK specialized for Robotics Simulation and Reinforcement Learning',
     long_description=

@@ -24,13 +24,13 @@ typedef unsigned long long int smUint64_t;
 #endif
 
 #ifdef __APPLE__
-#define SHARED_MEMORY_MAX_STREAM_CHUNK_SIZE (512 * 1024)
+#define SHARED_MEMORY_MAX_STREAM_CHUNK_SIZE (1024 * 1024)
 #else
 #define SHARED_MEMORY_MAX_STREAM_CHUNK_SIZE (8 * 1024 * 1024)
 #endif
 
 #define SHARED_MEMORY_SERVER_TEST_C
-#define MAX_DEGREE_OF_FREEDOM 128 
+#define MAX_DEGREE_OF_FREEDOM 128
 #define MAX_NUM_SENSORS 256
 #define MAX_URDF_FILENAME_LENGTH 1024
 #define MAX_SDF_FILENAME_LENGTH 1024
@@ -482,7 +482,8 @@ enum EnumSimParamUpdateFlags
 	SIM_PARAM_CONSTRAINT_SOLVER_TYPE = 1 << 24,
 	SIM_PARAM_CONSTRAINT_MIN_SOLVER_ISLAND_SIZE = 1 << 25,
 	SIM_PARAM_REPORT_CONSTRAINT_SOLVER_ANALYTICS = 1 << 26,
-
+	SIM_PARAM_UPDATE_WARM_STARTING_FACTOR = 1 << 27,
+        
 };
 
 enum EnumLoadSoftBodyUpdateFlags
@@ -627,6 +628,7 @@ struct b3Profile
 {
 	char m_name[MAX_FILENAME_LENGTH];
 	int m_durationInMicroSeconds;
+	int m_type;
 };
 
 struct SdfLoadedArgs
@@ -740,9 +742,10 @@ struct CalculateInverseKinematicsArgs
 {
 	int m_bodyUniqueId;
 	//	double m_jointPositionsQ[MAX_DEGREE_OF_FREEDOM];
-	double m_targetPosition[3];
+	double m_targetPositions[MAX_DEGREE_OF_FREEDOM*3];
+	int m_numEndEffectorLinkIndices;
 	double m_targetOrientation[4];  //orientation represented as quaternion, x,y,z,w
-	int m_endEffectorLinkIndex;
+	int m_endEffectorLinkIndices[MAX_DEGREE_OF_FREEDOM];
 	double m_lowerLimit[MAX_DEGREE_OF_FREEDOM];
 	double m_upperLimit[MAX_DEGREE_OF_FREEDOM];
 	double m_jointRange[MAX_DEGREE_OF_FREEDOM];
@@ -905,6 +908,10 @@ enum InternalOpenGLVisualizerUpdateFlags
 {
 	COV_SET_CAMERA_VIEW_MATRIX = 1,
 	COV_SET_FLAGS = 2,
+	COV_SET_LIGHT_POSITION = 4,
+	COV_SET_SHADOWMAP_RESOLUTION = 8,
+	COV_SET_SHADOWMAP_WORLD_SIZE = 16,
+	COV_SET_REMOTE_SYNC_TRANSFORM_INTERVAL = 32,
 };
 
 struct ConfigureOpenGLVisualizerRequest
@@ -913,7 +920,10 @@ struct ConfigureOpenGLVisualizerRequest
 	double m_cameraPitch;
 	double m_cameraYaw;
 	double m_cameraTargetPosition[3];
-
+	double m_lightPosition[3];
+	int m_shadowMapResolution;
+	int m_shadowMapWorldSize;
+	double m_remoteSyncTransformInterval;
 	int m_setFlag;
 	int m_setEnabled;
 };
@@ -950,8 +960,12 @@ struct b3CreateUserShapeData
 	int m_numIndices;
 	int m_numUVs;
 	int m_numNormals;
+	double m_heightfieldTextureScaling;
+	int m_numHeightfieldRows;
+	int m_numHeightfieldColumns;
 	double m_rgbaColor[4];
 	double m_specularColor[3];
+	int m_replaceHeightfieldIndex;
 };
 
 #define MAX_COMPOUND_COLLISION_SHAPES 16
@@ -1054,6 +1068,20 @@ struct AddUserDataRequestArgs
 	// Value data stored in m_bulletStreamDataServerToClientRefactor.
 };
 
+struct b3RequestMeshDataArgs
+{
+	int m_bodyUniqueId;
+	int m_linkIndex;
+	int m_startingVertex;
+};
+
+struct b3SendMeshDataArgs
+{
+	int m_numVerticesCopied;
+	int m_startingVertex;
+	int m_numVerticesRemaining;
+};
+
 struct SharedMemoryCommand
 {
 	int m_type;
@@ -1113,6 +1141,7 @@ struct SharedMemoryCommand
 		struct AddUserDataRequestArgs m_addUserDataRequestArgs;
 		struct UserDataRequestArgs m_removeUserDataRequestArgs;
 		struct b3CollisionFilterArgs m_collisionFilterArgs;
+		struct b3RequestMeshDataArgs m_requestMeshDataArgs;
 	};
 };
 
@@ -1188,6 +1217,7 @@ struct SharedMemoryStatus
 		struct UserDataResponseArgs m_userDataResponseArgs;
 		struct UserDataRequestArgs m_removeUserDataResponseArgs;
 		struct b3ForwardDynamicsAnalyticsArgs m_forwardDynamicsAnalyticsArgs;
+		struct b3SendMeshDataArgs m_sendMeshDataArgs;
 	};
 };
 

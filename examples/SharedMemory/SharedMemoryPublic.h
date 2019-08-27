@@ -7,7 +7,10 @@
 //Please don't replace an existing magic number:
 //instead, only ADD a new one at the top, comment-out previous one
 
-#define SHARED_MEMORY_MAGIC_NUMBER 201904030
+#define SHARED_MEMORY_MAGIC_NUMBER 201908110
+//#define SHARED_MEMORY_MAGIC_NUMBER 201908050
+//#define SHARED_MEMORY_MAGIC_NUMBER 2019060190
+//#define SHARED_MEMORY_MAGIC_NUMBER 201904030
 //#define SHARED_MEMORY_MAGIC_NUMBER 201902120
 //#define SHARED_MEMORY_MAGIC_NUMBER 201811260
 //#define SHARED_MEMORY_MAGIC_NUMBER 201810250
@@ -101,7 +104,8 @@ enum EnumSharedMemoryClientCommand
 	CMD_ADD_USER_DATA,
 	CMD_REMOVE_USER_DATA,
 	CMD_COLLISION_FILTER,
-	
+	CMD_REQUEST_MESH_DATA,
+
 	//don't go beyond this command!
 	CMD_MAX_CLIENT_COMMANDS,
 };
@@ -221,6 +225,9 @@ enum EnumSharedMemoryServerStatus
 	CMD_REMOVE_USER_DATA_FAILED,
 	CMD_REMOVE_STATE_COMPLETED,
 	CMD_REMOVE_STATE_FAILED,
+
+	CMD_REQUEST_MESH_DATA_COMPLETED,
+	CMD_REQUEST_MESH_DATA_FAILED,
 	//don't go beyond 'CMD_MAX_SERVER_COMMANDS!
 	CMD_MAX_SERVER_COMMANDS
 };
@@ -406,6 +413,17 @@ struct b3CameraImageData
 	const int* m_segmentationMaskValues;  //m_pixelWidth*m_pixelHeight ints
 };
 
+struct b3MeshVertex
+{
+	double x, y, z, w;
+};
+
+struct b3MeshData
+{
+	int m_numVertices;
+	struct b3MeshVertex* m_vertices;
+};
+
 struct b3OpenGLVisualizerCameraInfo
 {
 	int m_width;
@@ -533,6 +551,7 @@ enum b3NotificationType
 	VISUAL_SHAPE_CHANGED = 6,
 	TRANSFORM_CHANGED = 7,
 	SIMULATION_STEPPED = 8,
+	SOFTBODY_CHANGED = 9,
 };
 
 struct b3BodyNotificationArgs
@@ -571,6 +590,12 @@ struct b3TransformChangeNotificationArgs
 	double m_localScaling[3];
 };
 
+struct b3SoftBodyChangeNotificationArgs
+{
+	int m_bodyUniqueId;
+	int m_linkIndex;
+};
+
 struct b3Notification
 {
 	int m_notificationType;
@@ -580,6 +605,7 @@ struct b3Notification
 		struct b3LinkNotificationArgs m_linkArgs;
 		struct b3VisualShapeNotificationArgs m_visualShapeArgs;
 		struct b3TransformChangeNotificationArgs m_transformChangeArgs;
+		struct b3SoftBodyChangeNotificationArgs m_softBodyChangeArgs;
 	};
 };
 
@@ -748,6 +774,7 @@ enum
 	CONTROL_MODE_TORQUE,
 	CONTROL_MODE_POSITION_VELOCITY_PD,
 	CONTROL_MODE_PD,  // The standard PD control implemented as soft constraint.
+	CONTROL_MODE_STABLE_PD,
 };
 
 ///flags for b3ApplyExternalTorque and b3ApplyExternalForce
@@ -829,6 +856,7 @@ enum eCONNECT_METHOD
 	eCONNECT_MUJOCO = 11,
 	eCONNECT_GRPC = 12,
 	eCONNECT_PHYSX=13,
+	eCONNECT_SHARED_MEMORY_GUI=14,
 };
 
 enum eURDF_Flags
@@ -860,6 +888,8 @@ enum eUrdfGeomTypes  //sync with UrdfParser UrdfGeomTypes
 	GEOM_MESH,
 	GEOM_PLANE,
 	GEOM_CAPSULE,  //non-standard URDF?
+	GEOM_SDF,      //signed-distance-field, non-standard URDF
+	GEOM_HEIGHTFIELD,
 	GEOM_UNKNOWN,
 };
 
@@ -907,6 +937,7 @@ struct b3PhysicsSimulationParameters
 	double m_gravityAcceleration[3];
 	int m_numSimulationSubSteps;
 	int m_numSolverIterations;
+	double m_warmStartingFactor;
 	int m_useRealTimeSimulation;
 	int m_useSplitImpulse;
 	double m_splitImpulsePenetrationThreshold;

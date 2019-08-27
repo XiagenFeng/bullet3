@@ -127,6 +127,7 @@ enum MultiThreadedGUIHelperCommunicationEnums
 	eGUIHelperChangeTexture,
 	eGUIHelperRemoveTexture,
 	eGUIHelperSetVisualizerFlagCheckRenderedFrame,
+	eGUIHelperUpdateShape,
 };
 
 #include <stdio.h>
@@ -822,6 +823,16 @@ public:
 			m_childGuiHelper->syncPhysicsToGraphics(rbWorld);
 		}
 	}
+	
+	virtual void syncPhysicsToGraphics2(const btDiscreteDynamicsWorld* rbWorld)
+	{
+		 m_childGuiHelper->syncPhysicsToGraphics2(rbWorld);
+	}
+
+	virtual void syncPhysicsToGraphics2(const GUISyncPosition* positions, int numPositions)
+	{
+		m_childGuiHelper->syncPhysicsToGraphics2(positions, numPositions);
+	}
 
 	virtual void render(const btDiscreteDynamicsWorld* rbWorld)
 	{
@@ -855,6 +866,18 @@ public:
 		workerThreadWait();
 	}
 
+	int m_updateShapeIndex;
+	float* m_updateShapeVertices;
+
+	virtual void updateShape(int shapeIndex, float* vertices)
+	{
+		m_updateShapeIndex = shapeIndex;
+		m_updateShapeVertices = vertices;
+		
+		m_cs->lock();
+		m_cs->setSharedParam(1, eGUIHelperUpdateShape);
+		workerThreadWait();
+	}
 	virtual int registerTexture(const unsigned char* texels, int width, int height)
 	{
 		int* cachedTexture = m_cachedTextureIds[texels];
@@ -1489,6 +1512,7 @@ public:
 	{
 		//printf("key=%d, state=%d\n", key,state);
 		{
+			m_args[0].m_csGUI->lock();
 			int keyIndex = -1;
 			//is already there?
 			for (int i = 0; i < m_args[0].m_keyboardEvents.size(); i++)
@@ -1505,7 +1529,7 @@ public:
 				b3KeyboardEvent ev;
 				ev.m_keyCode = key;
 				ev.m_keyState = eButtonIsDown + eButtonTriggered;
-				m_args[0].m_csGUI->lock();
+				
 				if (keyIndex >= 0)
 				{
 					if (0 == (m_args[0].m_keyboardEvents[keyIndex].m_keyState & eButtonIsDown))
@@ -1517,11 +1541,10 @@ public:
 				{
 					m_args[0].m_keyboardEvents.push_back(ev);
 				}
-				m_args[0].m_csGUI->unlock();
+				
 			}
 			else
 			{
-				m_args[0].m_csGUI->lock();
 				b3KeyboardEvent ev;
 				ev.m_keyCode = key;
 				ev.m_keyState = eButtonReleased;
@@ -1533,8 +1556,9 @@ public:
 				{
 					m_args[0].m_keyboardEvents.push_back(ev);
 				}
-				m_args[0].m_csGUI->unlock();
+				
 			}
+			m_args[0].m_csGUI->unlock();
 		}
 		/*printf("m_args[0].m_keyboardEvents.size()=%d\n", m_args[0].m_keyboardEvents.size());
 		for (int i=0;i<m_args[0].m_keyboardEvents.size();i++)
@@ -1905,6 +1929,15 @@ void PhysicsServerExample::updateGraphics()
 			m_multiThreadedHelper->mainThreadRelease();
 			break;
 		}
+
+		case eGUIHelperUpdateShape:
+		{
+			B3_PROFILE("eGUIHelperUpdateShape");
+			m_multiThreadedHelper->m_childGuiHelper->updateShape(m_multiThreadedHelper->m_updateShapeIndex, m_multiThreadedHelper->m_updateShapeVertices);
+			m_multiThreadedHelper->mainThreadRelease();
+			break;
+		}
+
 		case eGUIHelperRegisterGraphicsShape:
 		{
 			B3_PROFILE("eGUIHelperRegisterGraphicsShape");
@@ -2027,6 +2060,7 @@ void PhysicsServerExample::updateGraphics()
 			}
 			break;
 		}
+
 
 		case eGUIHelperSetVisualizerFlagCheckRenderedFrame:
 		{

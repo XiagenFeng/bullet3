@@ -171,6 +171,14 @@ SET(BulletExampleBrowser_SRCS
 	../SharedMemory/PhysicsClientSharedMemory_C_API.cpp
 	../SharedMemory/PhysicsClient.cpp
 	../SharedMemory/PhysicsClientC_API.cpp
+	../SharedMemory/GraphicsServerExample.cpp
+	../SharedMemory/GraphicsClientExample.cpp
+	../SharedMemory/RemoteGUIHelper.cpp
+	../SharedMemory/GraphicsServerExample.h
+	../SharedMemory/GraphicsClientExample.h
+	../SharedMemory/RemoteGUIHelper.h
+	../SharedMemory/GraphicsSharedMemoryCommands.h
+	../SharedMemory/GraphicsSharedMemoryPublic.h
 	../SharedMemory/PhysicsServerExample.cpp
 	../SharedMemory/PhysicsServerExampleBullet2.cpp
 	../SharedMemory/PhysicsClientExample.cpp
@@ -351,6 +359,16 @@ SET(BulletExampleBrowser_SRCS
  ../MultiBody/MultiBodyConstraintFeedback.cpp
   ../SoftDemo/SoftDemo.cpp
   ../SoftDemo/SoftDemo.h
+  ../DeformableDemo/GraspDeformable.cpp
+  ../DeformableDemo/GraspDeformable.h
+  ../DeformableDemo/Pinch.cpp
+  ../DeformableDemo/Pinch.h
+  ../DeformableDemo/DeformableMultibody.cpp
+  ../DeformableDemo/DeformableMultibody.h
+  ../DeformableDemo/DeformableRigid.cpp
+  ../DeformableDemo/DeformableRigid.h
+  ../DeformableDemo/VolumetricDeformable.cpp
+  ../DeformableDemo/VolumetricDeformable.h
   ../MultiBody/MultiDofDemo.cpp
   ../MultiBody/MultiDofDemo.h
   ../RigidBody/RigidBodySoftContact.cpp
