@@ -11,20 +11,6 @@
  3. This notice may not be removed or altered from any source distribution.
  */
 
-///create 125 (5x5x5) dynamic object
-#define ARRAY_SIZE_X 5
-#define ARRAY_SIZE_Y 5
-#define ARRAY_SIZE_Z 5
-
-//maximum number of objects (and allow user to shoot additional boxes)
-#define MAX_PROXIES (ARRAY_SIZE_X * ARRAY_SIZE_Y * ARRAY_SIZE_Z + 1024)
-
-///scaling of the objects (0.1 = 20 centimeter boxes )
-#define SCALING 1.
-#define START_POS_X -5
-#define START_POS_Y -5
-#define START_POS_Z -3
-
 #include "Pinch.h"
 ///btBulletDynamicsCommon.h is the main Bullet include file, contains most common include files.
 #include "btBulletDynamicsCommon.h"
@@ -39,24 +25,16 @@
 #include "../CommonInterfaces/CommonRigidBodyBase.h"
 #include "../Utils/b3ResourcePath.h"
 
-///The Pinch shows the use of rolling friction.
-///Spheres will come to a rest on a sloped plane using a constraint. Damping cannot achieve the same.
-///Generally it is best to leave the rolling friction coefficient zero (or close to zero).
+///The Pinch shows the frictional contact between kinematic rigid objects with deformable objects
 
 struct TetraCube
 {
 #include "../SoftDemo/cube.inl"
 };
 
-struct TetraBunny
-{
-#include "../SoftDemo/bunny.inl"
-};
-
-
 class Pinch : public CommonRigidBodyBase
 {
-    btAlignedObjectArray<btDeformableLagrangianForce*> forces;
+    btAlignedObjectArray<btDeformableLagrangianForce*> m_forces;
 public:
 	Pinch(struct GUIHelperInterface* helper)
 		: CommonRigidBodyBase(helper)
@@ -336,21 +314,23 @@ void Pinch::initPhysics()
         psb->m_cfg.kDF = 2;
         psb->m_cfg.collisions = btSoftBody::fCollision::SDF_RD;
         getDeformableDynamicsWorld()->addSoftBody(psb);
+        btSoftBodyHelpers::generateBoundaryFaces(psb);
         
         btDeformableMassSpringForce* mass_spring = new btDeformableMassSpringForce(1,0.05);
         getDeformableDynamicsWorld()->addForce(psb, mass_spring);
-        forces.push_back(mass_spring);
+        m_forces.push_back(mass_spring);
         
         btDeformableGravityForce* gravity_force =  new btDeformableGravityForce(gravity);
         getDeformableDynamicsWorld()->addForce(psb, gravity_force);
-        forces.push_back(gravity_force);
+        m_forces.push_back(gravity_force);
         
         btDeformableNeoHookeanForce* neohookean = new btDeformableNeoHookeanForce(.2,1);
         getDeformableDynamicsWorld()->addForce(psb, neohookean);
-        forces.push_back(neohookean);
+        m_forces.push_back(neohookean);
         // add a grippers
         createGrip();
     }
+    getDeformableDynamicsWorld()->setImplicit(false);
 	m_guiHelper->autogenerateGraphicsObjects(m_dynamicsWorld);
 }
 
@@ -372,11 +352,12 @@ void Pinch::exitPhysics()
 		delete obj;
 	}
     // delete forces
-    for (int j = 0; j < forces.size(); j++)
+    for (int j = 0; j < m_forces.size(); j++)
     {
-        btDeformableLagrangianForce* force = forces[j];
+        btDeformableLagrangianForce* force = m_forces[j];
         delete force;
     }
+    m_forces.clear();
 	//delete collision shapes
 	for (int j = 0; j < m_collisionShapes.size(); j++)
 	{

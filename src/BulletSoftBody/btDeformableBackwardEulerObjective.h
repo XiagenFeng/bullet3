@@ -20,6 +20,7 @@
 #include "btDeformableMassSpringForce.h"
 #include "btDeformableGravityForce.h"
 #include "btDeformableCorotatedForce.h"
+#include "btDeformableLinearElasticityForce.h"
 #include "btDeformableNeoHookeanForce.h"
 #include "btDeformableContactProjection.h"
 #include "btPreconditioner.h"
@@ -34,9 +35,11 @@ public:
     btAlignedObjectArray<btDeformableLagrangianForce*> m_lf;
     btAlignedObjectArray<btSoftBody *>& m_softBodies;
     Preconditioner* m_preconditioner;
-    btDeformableContactProjection projection;
+    btDeformableContactProjection m_projection;
     const TVStack& m_backupVelocity;
     btAlignedObjectArray<btSoftBody::Node* > m_nodes;
+    bool m_implicit;
+
     btDeformableBackwardEulerObjective(btAlignedObjectArray<btSoftBody *>& softBodies, const TVStack& backup_v);
     
     virtual ~btDeformableBackwardEulerObjective();
@@ -44,7 +47,7 @@ public:
     void initialize(){}
     
     // compute the rhs for CG solve, i.e, add the dt scaled implicit force to residual
-    void computeResidual(btScalar dt, TVStack& residual) const;
+    void computeResidual(btScalar dt, TVStack& residual);
     
     // add explicit force to the velocity
     void applyExplicitForce(TVStack& force);
@@ -69,13 +72,7 @@ public:
     
     void setDt(btScalar dt);
     
-    // enforce constraints in CG solve
-    void enforceConstraint(TVStack& x)
-    {
-        BT_PROFILE("enforceConstraint");
-        projection.enforceConstraint(x);
-    }
-    
+    // add friction force to residual
     void applyDynamicFriction(TVStack& r);
     
     // add dv to velocity
@@ -88,7 +85,7 @@ public:
     void project(TVStack& r)
     {
         BT_PROFILE("project");
-        projection.project(r);
+        m_projection.project(r);
     }
     
     // perform precondition M^(-1) x = b
@@ -97,18 +94,25 @@ public:
         m_preconditioner->operator()(x,b);
     }
 
+    // reindex all the vertices 
     virtual void updateId()
     {
-        size_t id = 0;
+        size_t node_id = 0;
+        size_t face_id = 0;
         m_nodes.clear();
         for (int i = 0; i < m_softBodies.size(); ++i)
         {
             btSoftBody* psb = m_softBodies[i];
             for (int j = 0; j < psb->m_nodes.size(); ++j)
             {
-                psb->m_nodes[j].index = id;
+                psb->m_nodes[j].index = node_id;
                 m_nodes.push_back(&psb->m_nodes[j]);
-                ++id;
+                ++node_id;
+            }
+            for (int j = 0; j < psb->m_faces.size(); ++j)
+            {
+                psb->m_faces[j].m_index = face_id;
+                ++face_id;
             }
         }
     }
@@ -117,6 +121,14 @@ public:
     {
         return &m_nodes;
     }
+    
+    void setImplicit(bool implicit)
+    {
+        m_implicit = implicit;
+    }
+
+    // Calculate the total potential energy in the system
+    btScalar totalEnergy(btScalar dt);
 };
 
 #endif /* btBackwardEulerObjective_h */

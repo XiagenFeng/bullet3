@@ -7,7 +7,10 @@
 //Please don't replace an existing magic number:
 //instead, only ADD a new one at the top, comment-out previous one
 
-#define SHARED_MEMORY_MAGIC_NUMBER 201908110
+#define SHARED_MEMORY_MAGIC_NUMBER 201911280
+//#define SHARED_MEMORY_MAGIC_NUMBER 201911180
+//#define SHARED_MEMORY_MAGIC_NUMBER 201909030
+//#define SHARED_MEMORY_MAGIC_NUMBER 201908110
 //#define SHARED_MEMORY_MAGIC_NUMBER 201908050
 //#define SHARED_MEMORY_MAGIC_NUMBER 2019060190
 //#define SHARED_MEMORY_MAGIC_NUMBER 201904030
@@ -340,6 +343,13 @@ enum DynamicsActivationState
 	eActivationStateDisableWakeup = 32,
 };
 
+enum b3BodyType
+{
+	BT_RIGID_BODY = 1,
+	BT_MULTI_BODY = 2,
+	BT_SOFT_BODY = 3,
+};
+
 struct b3DynamicsInfo
 {
 	double m_mass;
@@ -353,6 +363,7 @@ struct b3DynamicsInfo
 	double m_contactStiffness;
 	double m_contactDamping;
 	int m_activationState;
+	int m_bodyType;
 	double m_angularDamping;
 	double m_linearDamping;
 	double m_ccdSweptSphereRadius;
@@ -552,6 +563,13 @@ enum b3NotificationType
 	TRANSFORM_CHANGED = 7,
 	SIMULATION_STEPPED = 8,
 	SOFTBODY_CHANGED = 9,
+};
+
+enum b3ResetSimulationFlags
+{
+	RESET_USE_DEFORMABLE_WORLD=1,
+	RESET_USE_DISCRETE_DYNAMICS_WORLD=2,
+	RESET_USE_SIMPLE_BROADPHASE=4,
 };
 
 struct b3BodyNotificationArgs
@@ -938,6 +956,7 @@ struct b3PhysicsSimulationParameters
 	int m_numSimulationSubSteps;
 	int m_numSolverIterations;
 	double m_warmStartingFactor;
+	double m_articulatedWarmStartingFactor;
 	int m_useRealTimeSimulation;
 	int m_useSplitImpulse;
 	double m_splitImpulsePenetrationThreshold;
@@ -961,6 +980,7 @@ struct b3PhysicsSimulationParameters
 	int m_constraintSolverType;
 	int m_minimumSolverIslandSize;
 	int m_reportSolverAnalytics;
+	double m_sparseSdfVoxelSize;
 };
 
 

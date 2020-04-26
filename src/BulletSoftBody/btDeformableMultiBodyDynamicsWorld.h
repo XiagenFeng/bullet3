@@ -13,8 +13,8 @@
  3. This notice may not be removed or altered from any source distribution.
  */
 
-#ifndef BT_DEFORMABLE_RIGID_DYNAMICS_WORLD_H
-#define BT_DEFORMABLE_RIGID_DYNAMICS_WORLD_H
+#ifndef BT_DEFORMABLE_MULTIBODY_DYNAMICS_WORLD_H
+#define BT_DEFORMABLE_MULTIBODY_DYNAMICS_WORLD_H
 
 #include "btSoftMultiBodyDynamicsWorld.h"
 #include "btDeformableLagrangianForce.h"
@@ -29,6 +29,7 @@ typedef btAlignedObjectArray<btSoftBody*> btSoftBodyArray;
 class btDeformableBodySolver;
 class btDeformableLagrangianForce;
 struct MultiBodyInplaceSolverIslandCallback;
+struct DeformableBodyInplaceSolverIslandCallback;
 class btDeformableMultiBodyConstraintSolver;
 
 typedef btAlignedObjectArray<btSoftBody*> btSoftBodyArray;
@@ -36,7 +37,6 @@ typedef btAlignedObjectArray<btSoftBody*> btSoftBodyArray;
 class btDeformableMultiBodyDynamicsWorld : public btMultiBodyDynamicsWorld
 {
     typedef btAlignedObjectArray<btVector3> TVStack;
-//    using TVStack = btAlignedObjectArray<btVector3>;
     ///Solver classes that encapsulate multiple deformable bodies for solving
     btDeformableBodySolver* m_deformableBodySolver;
     btSoftBodyArray m_softBodies;
@@ -47,6 +47,10 @@ class btDeformableMultiBodyDynamicsWorld : public btMultiBodyDynamicsWorld
     btSoftBodyWorldInfo m_sbi;
     btScalar m_internalTime;
     int m_contact_iterations;
+    bool m_implicit;
+    bool m_lineSearch;
+    bool m_selfCollision;
+    DeformableBodyInplaceSolverIslandCallback* m_solverDeformableBodyIslandCallback;
     
     typedef void (*btSolverCallback)(btScalar time, btDeformableMultiBodyDynamicsWorld* world);
     btSolverCallback m_solverCallback;
@@ -60,28 +64,16 @@ protected:
     
     void solveConstraints(btScalar timeStep);
     
+    void updateActivationState(btScalar timeStep);
+    
+    void clearGravity();
+    
 public:
-    btDeformableMultiBodyDynamicsWorld(btDispatcher* dispatcher, btBroadphaseInterface* pairCache, btDeformableMultiBodyConstraintSolver* constraintSolver, btCollisionConfiguration* collisionConfiguration, btDeformableBodySolver* deformableBodySolver = 0)
-    : btMultiBodyDynamicsWorld(dispatcher, pairCache, (btMultiBodyConstraintSolver*)constraintSolver, collisionConfiguration),
-    m_deformableBodySolver(deformableBodySolver), m_solverCallback(0)
-    {
-        m_drawFlags = fDrawFlags::Std;
-        m_drawNodeTree = true;
-        m_drawFaceTree = false;
-        m_drawClusterTree = false;
-        m_sbi.m_broadphase = pairCache;
-        m_sbi.m_dispatcher = dispatcher;
-        m_sbi.m_sparsesdf.Initialize();
-        m_sbi.m_sparsesdf.setDefaultVoxelsz(0.025);
-        m_sbi.m_sparsesdf.Reset();
-        
-        m_sbi.air_density = (btScalar)1.2;
-        m_sbi.water_density = 0;
-        m_sbi.water_offset = 0;
-        m_sbi.water_normal = btVector3(0, 0, 0);
-        m_sbi.m_gravity.setValue(0, -10, 0);
-        m_internalTime = 0.0;
-    }
+	btDeformableMultiBodyDynamicsWorld(btDispatcher* dispatcher, btBroadphaseInterface* pairCache, btDeformableMultiBodyConstraintSolver* constraintSolver, btCollisionConfiguration* collisionConfiguration, btDeformableBodySolver* deformableBodySolver = 0);
+
+    virtual int stepSimulation(btScalar timeStep, int maxSubSteps = 1, btScalar fixedTimeStep = btScalar(1.) / btScalar(60.));
+
+	virtual void debugDrawWorld();
 
     void setSolverCallback(btSolverCallback cb)
     {
@@ -143,6 +135,8 @@ public:
     
     void removeSoftBody(btSoftBody* body);
     
+    void removeCollisionObject(btCollisionObject* collisionObject);
+    
     int getDrawFlags() const { return (m_drawFlags); }
     void setDrawFlags(int f) { m_drawFlags = f; }
     
@@ -150,9 +144,22 @@ public:
     
     void solveMultiBodyConstraints();
     
-    void solveMultiBodyRelatedConstraints();
+    void solveContactConstraints();
     
     void sortConstraints();
+    
+    void softBodySelfCollision();
+    
+    void setImplicit(bool implicit)
+    {
+        m_implicit = implicit;
+    }
+    
+    void setLineSearch(bool lineSearch)
+    {
+        m_lineSearch = lineSearch;
+    }
+
 };
 
-#endif  //BT_DEFORMABLE_RIGID_DYNAMICS_WORLD_H
+#endif  //BT_DEFORMABLE_MULTIBODY_DYNAMICS_WORLD_H

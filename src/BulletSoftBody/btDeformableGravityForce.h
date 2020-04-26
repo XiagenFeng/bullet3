@@ -28,8 +28,9 @@ public:
     {
     }
     
-    virtual void addScaledImplicitForce(btScalar scale, TVStack& force)
+    virtual void addScaledForces(btScalar scale, TVStack& force)
     {
+        addScaledGravityForce(scale, force);
     }
     
     virtual void addScaledExplicitForce(btScalar scale, TVStack& force)
@@ -37,18 +38,29 @@ public:
         addScaledGravityForce(scale, force);
     }
     
-    virtual void addScaledForceDifferential(btScalar scale, const TVStack& dv, TVStack& df)
+    virtual void addScaledDampingForce(btScalar scale, TVStack& force)
     {
-        
+    }
+    
+    virtual void addScaledElasticForceDifferential(btScalar scale, const TVStack& dx, TVStack& df)
+    {
+    }
+    
+    virtual void addScaledDampingForceDifferential(btScalar scale, const TVStack& dv, TVStack& df)
+    {
     }
     
     virtual void addScaledGravityForce(btScalar scale, TVStack& force)
     {
         int numNodes = getNumNodes();
-        btAssert(numNodes <= force.size())
+        btAssert(numNodes <= force.size());
         for (int i = 0; i < m_softBodies.size(); ++i)
         {
             btSoftBody* psb = m_softBodies[i];
+            if (!psb->isActive())
+            {
+                continue;
+            }
             for (int j = 0; j < psb->m_nodes.size(); ++j)
             {
                 btSoftBody::Node& n = psb->m_nodes[j];
@@ -63,6 +75,29 @@ public:
     virtual btDeformableLagrangianForceType getForceType()
     {
         return BT_GRAVITY_FORCE;
+    }
+
+    // the gravitational potential energy
+    virtual double totalEnergy(btScalar dt)
+    {
+        double e = 0;
+        for (int i = 0; i<m_softBodies.size();++i)
+        {
+            btSoftBody* psb = m_softBodies[i];
+            if (!psb->isActive())
+            {
+                continue;
+            }
+            for (int j = 0; j < psb->m_nodes.size(); ++j)
+            {
+                const btSoftBody::Node& node = psb->m_nodes[j];
+                if (node.m_im > 0)
+                {
+                    e -= m_gravity.dot(node.m_q)/node.m_im;
+                }
+            }
+        }
+        return e;
     }
     
     

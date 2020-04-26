@@ -19,7 +19,7 @@
 #include "btDeformableLagrangianForce.h"
 #include "LinearMath/btPolarDecomposition.h"
 
-static inline int PolarDecompose(const btMatrix3x3& m, btMatrix3x3& q, btMatrix3x3& s)
+static inline int PolarDecomposition(const btMatrix3x3& m, btMatrix3x3& q, btMatrix3x3& s)
 {
     static const btPolarDecomposition polar;
     return polar.decompose(m, q, s);
@@ -39,8 +39,9 @@ public:
     {
     }
     
-    virtual void addScaledImplicitForce(btScalar scale, TVStack& force)
+    virtual void addScaledForces(btScalar scale, TVStack& force)
     {
+        addScaledElasticForce(scale, force);
     }
     
     virtual void addScaledExplicitForce(btScalar scale, TVStack& force)
@@ -55,7 +56,7 @@ public:
     virtual void addScaledElasticForce(btScalar scale, TVStack& force)
     {
         int numNodes = getNumNodes();
-        btAssert(numNodes <= force.size())
+        btAssert(numNodes <= force.size());
         btVector3 grad_N_hat_1st_col = btVector3(-1,-1,-1);
         for (int i = 0; i < m_softBodies.size(); ++i)
         {
@@ -92,20 +93,24 @@ public:
     {
         // btMatrix3x3 JFinvT = F.adjoint();
         btScalar J = F.determinant();
-        P =  F.adjoint() * (m_lambda * (J-1));
+        P =  F.adjoint().transpose() * (m_lambda * (J-1));
         if (m_mu > SIMD_EPSILON)
         {
             btMatrix3x3 R,S;
             if (J < 1024 * SIMD_EPSILON)
                 R.setIdentity();
             else
-                PolarDecompose(F, R, S); // this QR is not robust, consider using implicit shift svd
+                PolarDecomposition(F, R, S); // this QR is not robust, consider using implicit shift svd
             /*https://fuchuyuan.github.io/research/svd/paper.pdf*/
             P += (F-R) * 2 * m_mu;
         }
     }
     
-    virtual void addScaledForceDifferential(btScalar scale, const TVStack& dv, TVStack& df)
+    virtual void addScaledElasticForceDifferential(btScalar scale, const TVStack& dx, TVStack& df)
+    {
+    }
+    
+    virtual void addScaledDampingForceDifferential(btScalar scale, const TVStack& dv, TVStack& df)
     {
     }
     
